@@ -25,16 +25,19 @@ async function fetchProductContext(url) {
     const response = await fetch(url, {
       redirect: "follow",
       headers: {
-        "user-agent": "Mozilla/5.0 AffiliateProductBot/1.0",
-        accept: "text/html,application/xhtml+xml",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36 AffiliateProductBot/1.0",
+        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "accept-language": "id-ID,id;q=0.9,en-US;q=0.7,en;q=0.6",
       },
       signal: AbortSignal.timeout(6000),
     });
     const html = await response.text();
+    const title = cleanTitle(extractMeta(html, "og:title") || extractTitle(html));
+    const description = cleanText(extractMeta(html, "og:description") || extractMeta(html, "description"));
     return {
       source: response.url || url,
-      title: extractMeta(html, "og:title") || extractTitle(html),
-      description: extractMeta(html, "og:description") || extractMeta(html, "description"),
+      title,
+      description,
       snippet: stripHtml(html).slice(0, 1200),
     };
   } catch {
@@ -57,11 +60,11 @@ async function enrichProductWithGroq(url, context) {
       messages: [
         {
           role: "system",
-          content: "Kamu adalah assistant affiliate Shopee Indonesia. Balas hanya JSON valid tanpa markdown.",
+          content: "Kamu adalah product researcher Shopee Affiliate Indonesia untuk konten Threads. Balas hanya JSON valid tanpa markdown. Utamakan fakta dari title/description. Jika data minim, buat profil generik yang jujur dan beri confidence low.",
         },
         {
           role: "user",
-          content: `Buat profil produk affiliate dari link dan konteks berikut.
+          content: `Ekstrak profil produk affiliate dari konteks berikut.
 
 Link: ${url}
 Final URL: ${context.source}
@@ -69,7 +72,14 @@ Title: ${context.title}
 Description: ${context.description}
 Snippet: ${context.snippet}
 
-Jika info kurang jelas, infer secara konservatif dari URL/title. Jangan mengarang brand spesifik yang tidak ada.
+Aturan kualitas:
+- Nama produk harus natural untuk pembeli Indonesia, 3-10 kata, bukan kode link, bukan token acak, bukan nama toko.
+- Jangan pakai kata "Shopee" sebagai nama produk kecuali memang bagian dari produk.
+- Kategori harus spesifik, misalnya "fashion wanita", "aksesoris gadget", "alat rumah tangga", "skincare", "perlengkapan bayi".
+- Selling point harus berupa manfaat nyata yang bisa dijadikan caption, bukan klaim berlebihan.
+- Keywords adalah istilah pencarian Threads yang umum dipakai manusia, bukan hashtag dan bukan keyword marketplace yang terlalu panjang.
+- Jika konteks tidak cukup untuk tahu produk tepatnya, gunakan nama "Produk affiliate Shopee", kategori "produk harian", confidence "low", dan keywords umum.
+- Jangan mengarang brand, harga, diskon, rating, atau bahan yang tidak ada di konteks.
 
 Format JSON wajib:
 {
@@ -77,8 +87,8 @@ Format JSON wajib:
   "category": "kategori produk",
   "price": "",
   "audience": "target pembeli",
-  "sellingPoints": "3-5 selling point dipisahkan koma",
-  "keywords": "5-8 keyword pencarian Threads dipisahkan koma",
+  "sellingPoints": ["3 sampai 5 selling point"],
+  "keywords": ["5 sampai 8 keyword pencarian Threads"],
   "confidence": "high|medium|low"
 }`,
         },
@@ -92,22 +102,16 @@ Format JSON wajib:
   }
   const content = body.choices?.[0]?.message?.content;
   if (!content) throw new Error("Groq tidak mengembalikan konten produk.");
-  const parsed = JSON.parse(content);
-  return {
-    name: parsed.name || "Produk Shopee",
-    category: parsed.category || "produk",
-    price: parsed.price || "",
-    audience: parsed.audience || "pembeli Shopee",
-    sellingPoints: parsed.sellingPoints || "praktis, value menarik, mudah digunakan",
-    keywords: parsed.keywords || parsed.name || "produk Shopee",
-    confidence: parsed.confidence || "medium",
-  };
+  return normalizeProduct(JSON.parse(extractJson(content)), context);
 }
 
 function extractMeta(html, key) {
-  const propertyMatch = html.match(new RegExp(`<meta[^>]+property=["']${escapeRegExp(key)}["'][^>]+content=["']([^"']+)["']`, "i"));
-  const nameMatch = html.match(new RegExp(`<meta[^>]+name=["']${escapeRegExp(key)}["'][^>]+content=["']([^"']+)["']`, "i"));
-  return decodeHtml(propertyMatch?.[1] || nameMatch?.[1] || "");
+  const tags = html.match(/<meta\b[^>]*>/gi) || [];
+  for (const tag of tags) {
+    const property = getAttribute(tag, "property") || getAttribute(tag, "name");
+    if (property?.toLowerCase() === key.toLowerCase()) return decodeHtml(getAttribute(tag, "content") || "");
+  }
+  return "";
 }
 
 function extractTitle(html) {
@@ -135,6 +139,126 @@ function decodeHtml(value) {
     .trim();
 }
 
-function escapeRegExp(value) {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function getAttribute(tag, name) {
+  const match = tag.match(new RegExp(`${name}=["']([^"']*)["']`, "i"));
+  return match?.[1] || "";
+}
+
+function cleanTitle(value) {
+  return cleanText(value)
+    .replace(/\s*\|\s*Shopee.*$/i, "")
+    .replace(/\s*-\s*Jual.*$/i, "")
+    .replace(/\s*Harga.*$/i, "")
+    .trim();
+}
+
+function cleanText(value) {
+  return decodeHtml(value)
+    .replace(/\s+/g, " ")
+    .replace(/\b(Beli|Jual)\s+/gi, "")
+    .trim();
+}
+
+function extractJson(content) {
+  const text = String(content || "").trim();
+  const match = text.match(/\{[\s\S]*\}/);
+  return match ? match[0] : text;
+}
+
+function normalizeProduct(parsed, context) {
+  const fallbackName = inferNameFromContext(context);
+  let name = cleanProductName(parsed.name) || fallbackName;
+  let confidence = normalizeConfidence(parsed.confidence);
+  if (isBadProductName(name)) {
+    name = fallbackName;
+    confidence = "low";
+  }
+
+  const sellingPoints = normalizeList(parsed.sellingPoints).filter((item) => !isBadProductName(item));
+  const keywords = normalizeList(parsed.keywords).filter((item) => !isBadProductName(item));
+  const category = cleanText(parsed.category) || inferCategory(`${context.title} ${context.description}`);
+
+  return {
+    name,
+    category,
+    price: normalizePrice(parsed.price),
+    audience: cleanText(parsed.audience) || audienceForCategory(category),
+    sellingPoints: (sellingPoints.length ? sellingPoints : defaultSellingPoints(category)).slice(0, 5).join(", "),
+    keywords: (keywords.length ? keywords : defaultKeywords(name, category)).slice(0, 8).join(", "),
+    confidence,
+  };
+}
+
+function cleanProductName(value) {
+  return cleanText(value)
+    .replace(/^produk\s*:\s*/i, "")
+    .replace(/^nama\s*produk\s*:\s*/i, "")
+    .replace(/[|#]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function inferNameFromContext(context) {
+  const title = cleanProductName(context.title);
+  if (title && !isBadProductName(title)) return title.slice(0, 90);
+  return "Produk affiliate Shopee";
+}
+
+function isBadProductName(value) {
+  const text = cleanText(value);
+  if (!text) return true;
+  if (/^[-\w]{7,14}$/i.test(text) && !/\s/.test(text)) return true;
+  if (/^(shopee|produk|fashion|pakaian|aksesoris)$/i.test(text)) return true;
+  if (/s\.shopee|shopee\.co\.id|https?:\/\//i.test(text)) return true;
+  return false;
+}
+
+function normalizeList(value) {
+  if (Array.isArray(value)) return value.map(cleanText).filter(Boolean);
+  return String(value || "")
+    .split(/[,;\n]/)
+    .map(cleanText)
+    .filter(Boolean);
+}
+
+function normalizePrice(value) {
+  return String(value || "").replace(/[^\d]/g, "");
+}
+
+function normalizeConfidence(value) {
+  const confidence = String(value || "").toLowerCase();
+  return ["high", "medium", "low"].includes(confidence) ? confidence : "medium";
+}
+
+function inferCategory(text) {
+  const source = cleanText(text).toLowerCase();
+  if (/dress|baju|kaos|kemeja|celana|hijab|sepatu|sandal|tas/.test(source)) return "fashion";
+  if (/case|charger|kabel|earphone|headset|powerbank|gadget|hp/.test(source)) return "aksesoris gadget";
+  if (/lampu|rak|dapur|pel|vacuum|botol|minum|rumah/.test(source)) return "perlengkapan rumah";
+  if (/skincare|serum|moisturizer|sunscreen|makeup|lip/.test(source)) return "beauty";
+  if (/bayi|anak|mainan|popok/.test(source)) return "perlengkapan anak";
+  return "produk harian";
+}
+
+function audienceForCategory(category) {
+  const map = {
+    fashion: "pengguna yang cari outfit praktis dan terjangkau",
+    "aksesoris gadget": "pengguna gadget yang butuh aksesori praktis",
+    "perlengkapan rumah": "orang yang ingin rumah lebih rapi dan nyaman",
+    beauty: "pengguna skincare dan makeup harian",
+    "perlengkapan anak": "orang tua dan keluarga muda",
+  };
+  return map[category] || "pembeli Shopee yang mencari produk praktis";
+}
+
+function defaultSellingPoints(category) {
+  return [
+    `cocok untuk kebutuhan ${category}`,
+    "mudah dipakai sehari-hari",
+    "pilihan praktis untuk pembeli online",
+  ];
+}
+
+function defaultKeywords(name, category) {
+  return [category, name, `rekomendasi ${category}`, `produk ${category}`, "belanja Shopee"];
 }

@@ -144,6 +144,16 @@ nav {
   gap: 8px;
 }
 
+.actions.compact {
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.actions.compact button {
+  min-height: 32px;
+  padding: 7px 10px;
+}
+
 .primary,
 .secondary,
 .ghost,
@@ -344,6 +354,16 @@ nav {
 .form {
   display: grid;
   gap: 10px;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.product-edit .card-header {
+  margin-bottom: 4px;
 }
 
 label {

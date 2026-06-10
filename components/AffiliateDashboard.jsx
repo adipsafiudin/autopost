@@ -44,6 +44,7 @@ export default function AffiliateDashboard() {
     threads: { connected: false },
   });
   const [productImport, setProductImport] = useState({ status: "idle", message: "" });
+  const [editingProductId, setEditingProductId] = useState(null);
 
   useEffect(() => {
     const saved = localStorage.getItem(STORE_KEY);
@@ -162,6 +163,30 @@ export default function AffiliateDashboard() {
       if (product) pushGeneratedDrafts(draft, product);
     });
     addLog("success", "Draft produk dibuat");
+  }
+
+  function saveProduct(productId, productData) {
+    update((draft) => {
+      const product = draft.products.find((item) => item.id === productId);
+      if (!product) return;
+      Object.assign(product, productData, { updatedAt: new Date().toISOString() });
+    });
+    setEditingProductId(null);
+    addLog("success", `Produk ${productData.name || "tanpa nama"} diperbarui`);
+  }
+
+  function deleteProduct(productId) {
+    const product = state.products.find((item) => item.id === productId);
+    if (!product) return;
+    if (!window.confirm(`Hapus produk "${product.name}" beserta draft dan target terkait?`)) return;
+    update((draft) => {
+      draft.products = draft.products.filter((item) => item.id !== productId);
+      draft.drafts = draft.drafts.filter((item) => item.productId !== productId);
+      draft.opportunities = draft.opportunities.filter((item) => item.productId !== productId);
+      draft.replies = draft.replies.filter((item) => item.productId !== productId);
+    });
+    if (editingProductId === productId) setEditingProductId(null);
+    addLog("success", `Produk ${product.name} dihapus`);
   }
 
   function pushGeneratedDrafts(draft, product) {
@@ -467,7 +492,7 @@ export default function AffiliateDashboard() {
           <strong>Alur utama:</strong> input produk, cari konten relevan, generate konten, lalu pilih mau dijadikan post utama atau reply.
         </section>
         <FlowStatus state={state} backendStatus={backendStatus} onConnect={connectThreads} onRefresh={() => refreshBackendStatus()} setActiveView={setActiveView} />
-        {activeView === "products" && <Products state={state} importStatus={productImport} onAdd={addProduct} onGenerate={generateProduct} onFind={(id) => findOpportunities(id)} onToggle={(id) => update((draft) => { const p = draft.products.find((item) => item.id === id); if (p) p.status = p.status === "active" ? "paused" : "active"; })} setActiveView={setActiveView} />}
+        {activeView === "products" && <Products state={state} importStatus={productImport} editingProductId={editingProductId} onAdd={addProduct} onGenerate={generateProduct} onFind={(id) => findOpportunities(id)} onToggle={(id) => update((draft) => { const p = draft.products.find((item) => item.id === id); if (p) p.status = p.status === "active" ? "paused" : "active"; })} onEdit={setEditingProductId} onCancelEdit={() => setEditingProductId(null)} onSave={saveProduct} onDelete={deleteProduct} setActiveView={setActiveView} />}
         {activeView === "search" && <SearchContent state={state} onFind={(productId) => findOpportunities(productId)} onFindAll={() => findOpportunities()} onQueue={createReply} onReject={(id) => update((draft) => { const item = draft.opportunities.find((entry) => entry.id === id); if (item) item.status = "rejected"; })} />}
         {activeView === "generate" && <GenerateContent state={state} onGenerate={generateAllDrafts} onQueue={createReply} onApprove={approveDraft} onPostNow={postNow} onReject={(id) => update((draft) => { const item = draft.drafts.find((entry) => entry.id === id); if (item) item.status = "rejected"; })} />}
         {activeView === "publish" && <PublishCenter state={state} onPostNow={postNow} onReplyNow={replyNow} onRun={runScheduler} onSkipReply={(id) => update((draft) => { const item = draft.replies.find((entry) => entry.id === id); if (item) item.status = "skipped"; })} />}
@@ -552,12 +577,12 @@ function FlowStatus({ state, backendStatus, onConnect, onRefresh, setActiveView 
   );
 }
 
-function Products({ state, importStatus, onAdd, onGenerate, onFind, onToggle, setActiveView }) {
+function Products({ state, importStatus, editingProductId, onAdd, onGenerate, onFind, onToggle, onEdit, onCancelEdit, onSave, onDelete, setActiveView }) {
   return (
     <div className="grid two">
       <section className="panel">
         <h2>Input Link Produk</h2>
-        <p className="muted">Tempel link produk atau link affiliate Shopee. AI Groq akan membuat nama, kategori, target pembeli, selling point, dan keyword otomatis.</p>
+        <p className="muted">Tempel link produk atau link affiliate Shopee. AI Groq akan membuat profil awal, lalu kamu bisa edit manual sebelum dipakai generate konten.</p>
         <form className="form" onSubmit={onAdd}>
           <label>Link produk / affiliate Shopee<input name="affiliateUrl" required placeholder="https://shopee.co.id/... atau https://s.shopee.co.id/..." /></label>
           <button className="primary" disabled={importStatus.status === "loading"} type="submit">
@@ -573,25 +598,98 @@ function Products({ state, importStatus, onAdd, onGenerate, onFind, onToggle, se
       </section>
       <section className="grid">
         {state.products.length ? state.products.map((product) => (
-          <article className="card" key={product.id}>
-            <div className="card-header">
-              <div><h3>{product.name}</h3><span className={`badge ${product.status === "active" ? "ok" : "warn"}`}>{product.status}</span></div>
-              <button className="ghost" onClick={() => onToggle(product.id)} type="button">{product.status === "active" ? "Pause" : "Activate"}</button>
-            </div>
-            <p className="muted">{product.category || "Tanpa kategori"} - {money(product.price)}</p>
-            <p>{productProfile(product).problem}</p>
-            <p className="muted">Target: {product.audience || "-"}</p>
-            <p className="muted">Keyword AI: {product.keywords || "-"}</p>
-            {product.confidence ? <span className={`badge ${product.confidence === "high" ? "ok" : "warn"}`}>AI confidence: {product.confidence}</span> : null}
-            <div className="actions">
-              <button className="secondary" onClick={() => onGenerate(product.id)} type="button">Generate content</button>
-              <button className="ghost" onClick={() => onFind(product.id)} type="button">Cari target</button>
-              <button className="primary" onClick={() => setActiveView("search")} type="button">Lanjut</button>
-            </div>
-          </article>
+          <ProductCard
+            isEditing={editingProductId === product.id}
+            key={product.id}
+            onCancelEdit={onCancelEdit}
+            onDelete={() => onDelete(product.id)}
+            onEdit={() => onEdit(product.id)}
+            onFind={() => onFind(product.id)}
+            onGenerate={() => onGenerate(product.id)}
+            onSave={(productData) => onSave(product.id, productData)}
+            onToggle={() => onToggle(product.id)}
+            product={product}
+            setActiveView={setActiveView}
+          />
         )) : <Empty label="Belum ada produk" />}
       </section>
     </div>
+  );
+}
+
+function ProductCard({ product, isEditing, onEdit, onCancelEdit, onSave, onDelete, onToggle, onGenerate, onFind, setActiveView }) {
+  if (isEditing) {
+    return <ProductEditCard product={product} onCancel={onCancelEdit} onSave={onSave} />;
+  }
+
+  return (
+    <article className="card">
+      <div className="card-header">
+        <div><h3>{product.name}</h3><span className={`badge ${product.status === "active" ? "ok" : "warn"}`}>{product.status}</span></div>
+        <div className="actions compact">
+          <button className="ghost" onClick={onToggle} type="button">{product.status === "active" ? "Pause" : "Activate"}</button>
+          <button className="ghost" onClick={onEdit} type="button">Edit</button>
+          <button className="danger" onClick={onDelete} type="button">Hapus</button>
+        </div>
+      </div>
+      <p className="muted">{product.category || "Tanpa kategori"} - {money(product.price)}</p>
+      <p>{productProfile(product).problem}</p>
+      <p className="muted">Target: {product.audience || "-"}</p>
+      <p className="muted">Selling point: {product.sellingPoints || "-"}</p>
+      <p className="muted">Keyword: {product.keywords || "-"}</p>
+      {product.confidence ? <span className={`badge ${product.confidence === "high" ? "ok" : product.confidence === "low" ? "danger" : "warn"}`}>AI confidence: {product.confidence}</span> : null}
+      <div className="actions">
+        <button className="secondary" onClick={onGenerate} type="button">Generate content</button>
+        <button className="ghost" onClick={onFind} type="button">Cari target</button>
+        <button className="primary" onClick={() => setActiveView("search")} type="button">Lanjut</button>
+      </div>
+    </article>
+  );
+}
+
+function ProductEditCard({ product, onSave, onCancel }) {
+  function submit(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = Object.fromEntries(new FormData(form).entries());
+    onSave({
+      name: data.name?.trim() || "Produk Shopee",
+      affiliateUrl: data.affiliateUrl?.trim() || product.affiliateUrl,
+      category: data.category?.trim() || "produk",
+      price: normalizePrice(data.price),
+      audience: data.audience?.trim() || "pembeli Shopee",
+      sellingPoints: data.sellingPoints?.trim() || "praktis, value menarik, mudah digunakan",
+      keywords: data.keywords?.trim() || data.name?.trim() || "produk Shopee",
+      confidence: data.confidence || product.confidence || "medium",
+      status: data.status || product.status || "active",
+    });
+  }
+
+  return (
+    <article className="card">
+      <form className="form product-edit" onSubmit={submit}>
+        <div className="card-header">
+          <div><h3>Edit produk</h3><span className="badge">manual override</span></div>
+          <div className="actions compact">
+            <button className="secondary" type="submit">Simpan</button>
+            <button className="ghost" onClick={onCancel} type="button">Batal</button>
+          </div>
+        </div>
+        <label>Nama produk<input name="name" required defaultValue={product.name || ""} /></label>
+        <label>Link affiliate<input name="affiliateUrl" required defaultValue={product.affiliateUrl || ""} /></label>
+        <div className="form-row">
+          <label>Kategori<input name="category" defaultValue={product.category || ""} /></label>
+          <label>Harga<input inputMode="numeric" name="price" defaultValue={product.price || ""} placeholder="99000" /></label>
+        </div>
+        <label>Target pembeli<input name="audience" defaultValue={product.audience || ""} /></label>
+        <label>Selling point<textarea name="sellingPoints" defaultValue={product.sellingPoints || ""} /></label>
+        <label>Keyword pencarian<textarea name="keywords" defaultValue={product.keywords || ""} /></label>
+        <div className="form-row">
+          <label>Status<select name="status" defaultValue={product.status || "active"}><option value="active">active</option><option value="paused">paused</option></select></label>
+          <label>Confidence<select name="confidence" defaultValue={product.confidence || "medium"}><option value="high">high</option><option value="medium">medium</option><option value="low">low</option></select></label>
+        </div>
+      </form>
+    </article>
   );
 }
 
@@ -935,6 +1033,10 @@ function extractThreadId(value = "") {
 
 function money(value) {
   return value ? `Rp${String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ".")}` : "-";
+}
+
+function normalizePrice(value) {
+  return String(value || "").replace(/[^\d]/g, "");
 }
 
 function todayKey(date = new Date()) {
