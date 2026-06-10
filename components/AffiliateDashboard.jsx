@@ -220,9 +220,12 @@ export default function AffiliateDashboard() {
       const count = result.opportunities?.length || 0;
       update((draft) => {
         const added = mergeOpportunities(draft, result.opportunities || []);
+        const fallback = String(result.mode || "").includes("fallback");
         draft.search = {
           status: count ? "success" : "empty",
-          message: count ? `Ditemukan ${count} konten dari produk yang dipilih, ${added} target baru ditambahkan.` : `Threads mengembalikan 0 hasil untuk produk yang dipilih. Perbaiki keyword target di produk agar lebih umum.`,
+          message: count
+            ? `${fallback ? "Threads live 0 hasil, memakai fallback simulasi: " : ""}Ditemukan ${count} konten dari produk yang dipilih, ${added} target baru ditambahkan.`
+            : `Threads mengembalikan 0 hasil untuk produk yang dipilih. Perbaiki keyword target di produk agar lebih umum.`,
           lastCount: count,
           lastMode: result.mode || "provider",
         };
