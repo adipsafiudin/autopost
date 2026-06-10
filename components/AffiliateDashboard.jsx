@@ -123,7 +123,8 @@ export default function AffiliateDashboard() {
 
   async function addProduct(event) {
     event.preventDefault();
-    const data = Object.fromEntries(new FormData(event.currentTarget).entries());
+    const form = event.currentTarget;
+    const data = Object.fromEntries(new FormData(form).entries());
     const url = data.affiliateUrl?.trim();
     if (!url) return;
     setProductImport({ status: "loading", message: "AI sedang membaca link dan membuat profil produk..." });
@@ -141,7 +142,7 @@ export default function AffiliateDashboard() {
           ...result.product,
         });
       });
-      event.currentTarget.reset();
+      form.reset();
       setProductImport({ status: "success", message: `Produk "${result.product.name}" berhasil dibuat oleh AI.` });
       addLog("success", `Produk ${result.product.name} disimpan dari link`);
     } catch (error) {
@@ -251,7 +252,8 @@ export default function AffiliateDashboard() {
 
   function addManualReply(event) {
     event.preventDefault();
-    const data = Object.fromEntries(new FormData(event.currentTarget).entries());
+    const form = event.currentTarget;
+    const data = Object.fromEntries(new FormData(form).entries());
     const product = state.products.find((item) => item.id === data.productId);
     if (!product) {
       addLog("error", "Pilih produk sebelum membuat reply");
@@ -272,7 +274,7 @@ export default function AffiliateDashboard() {
         createdAt: new Date().toISOString(),
       });
     });
-    event.currentTarget.reset();
+    form.reset();
     addLog("success", "Manual reply draft dibuat");
   }
 
