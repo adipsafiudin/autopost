@@ -17,15 +17,6 @@ export async function POST(request) {
       const products = payload.products || [];
       const nested = await Promise.all(products.map((product) => searchThreadsByProduct(product, payload.manualQuery || "")));
       const opportunities = nested.flat();
-      if (!opportunities.length && payload.settings?.fallbackDiscovery !== "off") {
-        return NextResponse.json({
-          mode: "threads_keyword_search_fallback_mock",
-          opportunities: buildMockOpportunities(products, payload.settings || {}),
-          searchedProducts: products.length,
-          manualQuery: payload.manualQuery || "",
-          fallbackReason: "Threads keyword search mengembalikan 0 hasil. Fallback mock dipakai agar flow generate reply tetap bisa berjalan.",
-        });
-      }
       return NextResponse.json({
         mode: "threads_keyword_search",
         opportunities,

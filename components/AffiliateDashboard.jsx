@@ -220,12 +220,11 @@ export default function AffiliateDashboard() {
       const count = result.opportunities?.length || 0;
       update((draft) => {
         const added = mergeOpportunities(draft, result.opportunities || []);
-        const fallback = String(result.mode || "").includes("fallback");
         draft.search = {
           status: count ? "success" : "empty",
           message: count
-            ? `${fallback ? "Threads live 0 hasil, memakai fallback simulasi: " : ""}Ditemukan ${count} konten dari produk yang dipilih, ${added} target baru ditambahkan.`
-            : `Threads mengembalikan 0 hasil untuk produk yang dipilih. Perbaiki keyword target di produk agar lebih umum.`,
+            ? `Ditemukan ${count} konten live dari produk yang dipilih, ${added} target baru ditambahkan.`
+            : `Threads live belum menemukan post dengan Thread ID untuk produk ini. Coba keyword yang lebih umum atau cari lagi nanti.`,
           lastCount: count,
           lastMode: result.mode || "provider",
         };
@@ -266,6 +265,10 @@ export default function AffiliateDashboard() {
       const opportunity = draft.opportunities.find((item) => item.id === opportunityId);
       const product = draft.products.find((item) => item.id === opportunity?.productId);
       if (!opportunity || !product) return;
+      if (draft.settings.threadsMode === "live" && !opportunity.targetThreadId) {
+        opportunity.status = "rejected";
+        return;
+      }
       const body = `Bisa cek ${product.name}. Menurutku cocok buat kebutuhan ini karena ${splitList(product.sellingPoints)[0] || "praktis dan value-nya oke"}.\n\n${product.affiliateUrl}\n${draft.settings.disclosure}`;
       if (draft.replies.some((item) => item.body.trim().toLowerCase() === body.trim().toLowerCase())) return;
       draft.replies.unshift({
@@ -327,7 +330,7 @@ export default function AffiliateDashboard() {
       const item = draft.replies.find((entry) => entry.id === replyId);
       if (!item) return;
       if (draft.settings.threadsMode === "live" && !item.targetThreadId) {
-        item.error = "Reply live membutuhkan Thread ID dari post Threads asli.";
+        item.error = "Target ini tidak berasal dari post Threads live, jadi tidak bisa dikirim sebagai reply live.";
         return;
       }
       const approvedToday = draft.replies.filter((reply) => reply.approvedAt?.startsWith(todayKey())).length;
@@ -346,7 +349,7 @@ export default function AffiliateDashboard() {
     const reply = state.replies.find((item) => item.id === replyId);
     if (!reply) return;
     if (state.settings.threadsMode === "live" && !reply.targetThreadId) {
-      addLog("error", "Reply live butuh Thread ID dari post Threads asli. Isi Thread ID dulu di kartu reply.");
+      addLog("error", "Reply live hanya bisa dikirim dari target hasil Threads API yang memiliki Thread ID.");
       return;
     }
     if (state.settings.threadsMode === "live") {
@@ -361,25 +364,6 @@ export default function AffiliateDashboard() {
     } else {
       markReplyPosted(reply.id, `mock_reply_${Date.now()}`);
     }
-  }
-
-  function saveReplyTarget(replyId, event) {
-    event.preventDefault();
-    const data = Object.fromEntries(new FormData(event.currentTarget).entries());
-    const targetThreadId = extractThreadId(data.targetThreadId);
-    if (!targetThreadId) {
-      addLog("error", "Thread ID wajib diisi sebelum reply live");
-      return;
-    }
-    update((draft) => {
-      const reply = draft.replies.find((item) => item.id === replyId);
-      if (!reply) return;
-      reply.targetThreadId = targetThreadId;
-      reply.targetAuthor = data.targetAuthor?.trim() || reply.targetAuthor;
-      if (reply.status === "failed") reply.status = "draft";
-      reply.error = "";
-    });
-    addLog("success", "Thread ID reply disimpan");
   }
 
   async function runScheduler() {
@@ -522,7 +506,7 @@ export default function AffiliateDashboard() {
         {activeView === "products" && <Products state={state} importStatus={productImport} editingProductId={editingProductId} onAdd={addProduct} onGenerate={generateProduct} onFind={(id) => findOpportunities(id)} onToggle={(id) => update((draft) => { const p = draft.products.find((item) => item.id === id); if (p) p.status = p.status === "active" ? "paused" : "active"; })} onEdit={setEditingProductId} onCancelEdit={() => setEditingProductId(null)} onSave={saveProduct} onDelete={deleteProduct} setActiveView={setActiveView} />}
         {activeView === "search" && <SearchContent state={state} onFind={(productId) => findOpportunities(productId)} onFindAll={() => findOpportunities()} onQueue={createReply} onReject={(id) => update((draft) => { const item = draft.opportunities.find((entry) => entry.id === id); if (item) item.status = "rejected"; })} />}
         {activeView === "generate" && <GenerateContent state={state} onGenerate={generateAllDrafts} onQueue={createReply} onApprove={approveDraft} onPostNow={postNow} onReject={(id) => update((draft) => { const item = draft.drafts.find((entry) => entry.id === id); if (item) item.status = "rejected"; })} />}
-        {activeView === "publish" && <PublishCenter state={state} onPostNow={postNow} onReplyNow={replyNow} onRun={runScheduler} onSaveReplyTarget={saveReplyTarget} onSkipReply={(id) => update((draft) => { const item = draft.replies.find((entry) => entry.id === id); if (item) item.status = "skipped"; })} />}
+        {activeView === "publish" && <PublishCenter state={state} onPostNow={postNow} onReplyNow={replyNow} onRun={runScheduler} onSkipReply={(id) => update((draft) => { const item = draft.replies.find((entry) => entry.id === id); if (item) item.status = "skipped"; })} />}
         {activeView === "settings" && <Settings state={state} onSave={(settings) => update((draft) => { draft.settings = settings; })} />}
       </main>
     </>
@@ -727,6 +711,7 @@ function ProductEditCard({ product, onSave, onCancel }) {
 
 function SearchContent({ state, onFind, onFindAll, onQueue, onReject }) {
   const opportunities = state.opportunities.filter((item) => item.status === "queued");
+  const liveMode = state.settings.threadsMode === "live";
   return (
     <>
       <section className="panel">
@@ -764,7 +749,7 @@ function SearchContent({ state, onFind, onFindAll, onQueue, onReject }) {
         )) : <Empty label="Belum ada produk" />}
       </div>
       <div className="grid two" style={{ marginTop: 14 }}>
-        {opportunities.length ? opportunities.map((item) => <OpportunityCard key={item.id} item={item} product={state.products.find((p) => p.id === item.productId)} onReply={() => onQueue(item.id)} onReject={() => onReject(item.id)} />) : <Empty label="Belum ada target reply" />}
+        {opportunities.length ? opportunities.map((item) => <OpportunityCard isLiveMode={liveMode} key={item.id} item={item} product={state.products.find((p) => p.id === item.productId)} onReply={() => onQueue(item.id)} onReject={() => onReject(item.id)} />) : <Empty label="Belum ada target reply" />}
       </div>
     </>
   );
@@ -815,7 +800,7 @@ function GenerateContent({ state, onGenerate, onQueue, onApprove, onPostNow, onR
   );
 }
 
-function PublishCenter({ state, onPostNow, onReplyNow, onRun, onSaveReplyTarget, onSkipReply }) {
+function PublishCenter({ state, onPostNow, onReplyNow, onRun, onSkipReply }) {
   const posts = state.drafts.filter((item) => ["draft", "scheduled", "failed", "posted"].includes(item.status));
   const replies = state.replies.filter((item) => ["draft", "approved", "failed", "posted"].includes(item.status));
   const liveMode = state.settings.threadsMode === "live";
@@ -839,19 +824,12 @@ function PublishCenter({ state, onPostNow, onReplyNow, onRun, onSaveReplyTarget,
           <h2>Reply ke post orang lain</h2>
           {replies.length ? replies.map((reply) => (
             <article className="card" key={reply.id}>
-              <div className="card-header"><span className={`badge ${reply.status === "posted" ? "ok" : reply.status === "failed" ? "danger" : !reply.targetThreadId && liveMode ? "warn" : ""}`}>{!reply.targetThreadId && liveMode ? "butuh Thread ID" : reply.status}</span><span className="muted">{reply.targetAuthor}</span></div>
+              <div className="card-header"><span className={`badge ${reply.status === "posted" ? "ok" : reply.status === "failed" ? "danger" : !reply.targetThreadId && liveMode ? "warn" : ""}`}>{!reply.targetThreadId && liveMode ? "target tidak live" : reply.status}</span><span className="muted">{reply.targetAuthor}</span></div>
               <p className="muted">Thread ID: {reply.targetThreadId || "belum tersedia"}</p>
               <p className="copy">{reply.body}</p>
               {reply.error ? <p className="muted">{reply.error}</p> : null}
-              {liveMode && !reply.targetThreadId ? (
-                <form className="form compact-form" onSubmit={(event) => onSaveReplyTarget(reply.id, event)}>
-                  <label>Thread URL / ID<input name="targetThreadId" placeholder="Paste URL post Threads atau ID post asli" /></label>
-                  <label>Target author opsional<input name="targetAuthor" defaultValue={reply.targetAuthor || ""} /></label>
-                  <button className="secondary" type="submit">Simpan Thread ID</button>
-                </form>
-              ) : null}
               <div className="actions">
-                {reply.status !== "posted" ? <button className="primary" disabled={liveMode && !reply.targetThreadId} onClick={() => onReplyNow(reply.id)} type="button">{liveMode && !reply.targetThreadId ? "Isi Thread ID dulu" : "Reply now"}</button> : null}
+                {reply.status !== "posted" ? <button className="primary" disabled={liveMode && !reply.targetThreadId} onClick={() => onReplyNow(reply.id)} type="button">{liveMode && !reply.targetThreadId ? "Tidak bisa reply live" : "Reply now"}</button> : null}
                 <button className="danger" onClick={() => onSkipReply(reply.id)} type="button">Skip</button>
               </div>
             </article>
@@ -1009,8 +987,9 @@ function ContentCard({ item, product, onApprove, onPostNow, onReject }) {
   return <article className="card"><div className="card-header"><span className="badge">{item.status}</span><span className="muted">{product?.name || "Produk"}</span></div><p className="copy">{item.caption}</p><div className="actions"><button className="primary" onClick={onPostNow} type="button">Post now</button><button className="secondary" onClick={onApprove} type="button">Approve</button><button className="danger" onClick={onReject} type="button">Reject</button></div></article>;
 }
 
-function OpportunityCard({ item, product, onReply, onReject }) {
-  return <article className="card"><div className="card-header"><div><h3>{item.author}</h3><span className={`badge ${item.totalScore > 75 ? "ok" : item.spamRisk > 45 ? "danger" : "warn"}`}>score {item.totalScore}</span></div><span className="muted">{item.platform}</span></div><p className="copy">{item.text}</p><p><strong>Produk:</strong> {product?.name || "-"}</p><p className="muted">Target thread ID: {item.targetThreadId || "belum tersedia"}</p><p className="muted">{item.reason}</p><Scores item={item} /><div className="actions"><button className="primary" onClick={onReply} type="button">Queue reply</button><button className="ghost" onClick={onReject} type="button">Reject</button></div></article>;
+function OpportunityCard({ item, product, isLiveMode, onReply, onReject }) {
+  const canReplyLive = !isLiveMode || Boolean(item.targetThreadId);
+  return <article className="card"><div className="card-header"><div><h3>{item.author}</h3><span className={`badge ${item.totalScore > 75 ? "ok" : item.spamRisk > 45 ? "danger" : "warn"}`}>score {item.totalScore}</span></div><span className="muted">{item.platform}</span></div><p className="copy">{item.text}</p><p><strong>Produk:</strong> {product?.name || "-"}</p><p className="muted">Target thread ID: {item.targetThreadId || "belum tersedia"}</p>{isLiveMode && !item.targetThreadId ? <p className="muted">Target ini bukan hasil Threads live, jadi tidak bisa dikirim sebagai reply live.</p> : null}<p className="muted">{item.reason}</p><Scores item={item} /><div className="actions"><button className="primary" disabled={!canReplyLive} onClick={onReply} type="button">{canReplyLive ? "Queue reply" : "Tidak bisa reply live"}</button><button className="ghost" onClick={onReject} type="button">Reject</button></div></article>;
 }
 
 function Scores({ item }) {

@@ -366,14 +366,6 @@ nav {
   margin-bottom: 4px;
 }
 
-.compact-form {
-  margin: 12px 0;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #f8fafc;
-}
-
 label {
   display: grid;
   gap: 6px;
