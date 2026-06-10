@@ -157,7 +157,8 @@ export default function AffiliateDashboard() {
       return;
     }
     update((draft) => {
-      draft.search = { status: "searching", message: `Mencari konten untuk ${products.length} produk...`, lastCount: 0, lastMode: "" };
+      const names = products.map((product) => product.name).join(", ");
+      draft.search = { status: "searching", message: `Mencari konten berdasarkan produk: ${names}`, lastCount: 0, lastMode: "" };
     });
     try {
       const result = await apiJson("/api/discovery/run", {
@@ -169,7 +170,7 @@ export default function AffiliateDashboard() {
         const added = mergeOpportunities(draft, result.opportunities || []);
         draft.search = {
           status: count ? "success" : "empty",
-          message: count ? `Ditemukan ${count} konten relevan, ${added} target baru ditambahkan.` : `Threads mengembalikan 0 hasil. Coba keyword yang lebih umum.`,
+          message: count ? `Ditemukan ${count} konten dari produk yang dipilih, ${added} target baru ditambahkan.` : `Threads mengembalikan 0 hasil untuk produk yang dipilih. Perbaiki keyword target di produk agar lebih umum.`,
           lastCount: count,
           lastMode: result.mode || "provider",
         };
@@ -445,7 +446,7 @@ export default function AffiliateDashboard() {
         </section>
         <FlowStatus state={state} backendStatus={backendStatus} onConnect={connectThreads} onRefresh={() => refreshBackendStatus()} setActiveView={setActiveView} />
         {activeView === "products" && <Products state={state} onAdd={addProduct} onGenerate={generateProduct} onFind={(id) => findOpportunities(id)} onToggle={(id) => update((draft) => { const p = draft.products.find((item) => item.id === id); if (p) p.status = p.status === "active" ? "paused" : "active"; })} setActiveView={setActiveView} />}
-        {activeView === "search" && <SearchContent state={state} onFind={(query) => findOpportunities(null, query)} onQueue={createReply} onReject={(id) => update((draft) => { const item = draft.opportunities.find((entry) => entry.id === id); if (item) item.status = "rejected"; })} />}
+        {activeView === "search" && <SearchContent state={state} onFind={(productId) => findOpportunities(productId)} onFindAll={() => findOpportunities()} onQueue={createReply} onReject={(id) => update((draft) => { const item = draft.opportunities.find((entry) => entry.id === id); if (item) item.status = "rejected"; })} />}
         {activeView === "generate" && <GenerateContent state={state} onGenerate={generateAllDrafts} onQueue={createReply} onApprove={approveDraft} onPostNow={postNow} onReject={(id) => update((draft) => { const item = draft.drafts.find((entry) => entry.id === id); if (item) item.status = "rejected"; })} />}
         {activeView === "publish" && <PublishCenter state={state} onPostNow={postNow} onReplyNow={replyNow} onRun={runScheduler} onSkipReply={(id) => update((draft) => { const item = draft.replies.find((entry) => entry.id === id); if (item) item.status = "skipped"; })} />}
         {activeView === "settings" && <Settings state={state} onSave={(settings) => update((draft) => { draft.settings = settings; })} />}
@@ -567,28 +568,20 @@ function Products({ state, onAdd, onGenerate, onFind, onToggle, setActiveView })
   );
 }
 
-function SearchContent({ state, onFind, onQueue, onReject }) {
+function SearchContent({ state, onFind, onFindAll, onQueue, onReject }) {
   const opportunities = state.opportunities.filter((item) => item.status === "queued");
-  function submitSearch(event) {
-    event.preventDefault();
-    const data = Object.fromEntries(new FormData(event.currentTarget).entries());
-    onFind(data.keyword);
-  }
   return (
     <>
       <section className="panel">
         <div className="card-header">
           <div>
-            <h2>Cari post orang lain yang relevan</h2>
-            <p className="muted">Sistem memakai keyword produk. Kamu juga bisa isi keyword manual supaya hasil lebih luas.</p>
+            <h2>Cari post berdasarkan produk kamu</h2>
+            <p className="muted">Pilih produk di bawah. Sistem otomatis memakai nama produk, kategori, dan keyword target dari produk itu.</p>
           </div>
-        </div>
-        <form className="search-form" onSubmit={submitSearch}>
-          <input name="keyword" placeholder="Keyword opsional, contoh: lap mobil, vacuum mini, lampu kamar" />
-          <button className="primary" disabled={state.search?.status === "searching"} type="submit">
-            {state.search?.status === "searching" ? "Mencari..." : "Cari konten relevan"}
+          <button className="primary" disabled={state.search?.status === "searching" || !state.products.length} onClick={onFindAll} type="button">
+            {state.search?.status === "searching" ? "Mencari..." : "Cari untuk semua produk"}
           </button>
-        </form>
+        </div>
         {state.search?.message ? (
           <div className={`inline-status ${state.search.status}`}>
             <strong>{state.search.status === "error" ? "Search error" : state.search.status === "empty" ? "Tidak ada hasil" : "Status"}</strong>
@@ -596,6 +589,23 @@ function SearchContent({ state, onFind, onQueue, onReject }) {
           </div>
         ) : null}
       </section>
+      <div className="grid three" style={{ marginTop: 14 }}>
+        {state.products.length ? state.products.map((product) => (
+          <article className="card" key={product.id}>
+            <div className="card-header">
+              <div>
+                <h3>{product.name}</h3>
+                <span className={`badge ${product.status === "active" ? "ok" : "warn"}`}>{product.status}</span>
+              </div>
+            </div>
+            <p className="muted">Kategori: {product.category || "-"}</p>
+            <p className="muted">Keyword yang dipakai: {searchTermsForProduct(product).join(", ") || product.name}</p>
+            <button className="primary" disabled={state.search?.status === "searching" || product.status !== "active"} onClick={() => onFind(product.id)} type="button">
+              Cari konten untuk produk ini
+            </button>
+          </article>
+        )) : <Empty label="Belum ada produk" />}
+      </div>
       <div className="grid two" style={{ marginTop: 14 }}>
         {opportunities.length ? opportunities.map((item) => <OpportunityCard key={item.id} item={item} product={state.products.find((p) => p.id === item.productId)} onReply={() => onQueue(item.id)} onReject={() => onReject(item.id)} />) : <Empty label="Belum ada target reply" />}
       </div>
@@ -913,6 +923,16 @@ function productProfile(product) {
     keywords,
     angles: [`Rekomendasi ${product.category || "produk"} dengan value jelas`],
   };
+}
+
+function searchTermsForProduct(product) {
+  const terms = [
+    ...splitList(product.keywords),
+    product.category,
+    ...String(product.name || "").split(/\s+/).filter((word) => word.length > 3),
+    product.name,
+  ];
+  return [...new Set(terms.map((item) => String(item || "").trim()).filter(Boolean))].slice(0, 5);
 }
 
 function generateCaptions(product, settings) {
