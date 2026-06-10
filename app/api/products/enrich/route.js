@@ -18,15 +18,44 @@ export async function POST(request) {
       return NextResponse.json({ ok: false, error: "GROQ_API_KEY belum diset di Vercel Environment Variables." }, { status: 500 });
     }
 
-    const pageContext = await fetchProductContext(url);
+    const resolvedUrl = await resolveProductUrl(url);
+    const pageContext = await fetchProductContext(resolvedUrl);
     const webContext = await fetchWebSearchContext(url, pageContext);
-    const scrapedPages = await scrapeCandidatePages(url, pageContext, webContext);
-    const context = { ...pageContext, webSearch: webContext, scrapedPages };
+    const shopeeIds = extractShopeeIds(pageContext.source) || extractShopeeIds(resolvedUrl) || extractShopeeIds(url);
+    const shopeeApi = shopeeIds ? await fetchShopeeApiProduct(shopeeIds, pageContext.source) : null;
+    const scrapedPages = await scrapeCandidatePages(url, pageContext, webContext, shopeeApi);
+    const context = { ...pageContext, webSearch: webContext, scrapedPages, shopeeApi };
     const product = await enrichProductWithGroq(url, context);
+    if (isGenericProduct(product) && !hasStrongProductEvidence(context)) {
+      throw new Error("Data produk belum berhasil di-scrape dari link Shopee. Coba gunakan link produk Shopee asli yang panjang, bukan short affiliate link.");
+    }
     return NextResponse.json({ ok: true, product, source: pageContext.source, webSearch: webContext, scrapedPages });
   } catch (error) {
     return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
   }
+}
+
+async function resolveProductUrl(url) {
+  let current = url;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      const response = await fetch(current, {
+        redirect: "manual",
+        headers: FETCH_HEADERS,
+        signal: AbortSignal.timeout(6000),
+      });
+      const location = response.headers.get("location");
+      if (location) {
+        current = new URL(location, current).toString();
+        continue;
+      }
+      const html = await response.text();
+      return extractRedirectUrl(html, current) || response.url || current;
+    } catch {
+      return current;
+    }
+  }
+  return current;
 }
 
 async function fetchProductContext(url) {
@@ -51,6 +80,38 @@ async function fetchProductContext(url) {
   } catch {
     return { source: url, title: "", description: "", snippet: "" };
   }
+}
+
+async function fetchShopeeApiProduct(ids, referer) {
+  const { shopId, itemId } = ids;
+  const headers = {
+    ...FETCH_HEADERS,
+    accept: "application/json, text/plain, */*",
+    referer: referer || `https://shopee.co.id/product/${shopId}/${itemId}`,
+    "x-api-source": "pc",
+    "x-requested-with": "XMLHttpRequest",
+  };
+  const endpoints = [
+    `https://shopee.co.id/api/v4/pdp/get_pc?shop_id=${shopId}&item_id=${itemId}&detail_level=0`,
+    `https://shopee.co.id/api/v4/item/get?shopid=${shopId}&itemid=${itemId}`,
+  ];
+
+  for (const endpoint of endpoints) {
+    try {
+      const response = await fetch(endpoint, {
+        headers,
+        signal: AbortSignal.timeout(7000),
+      });
+      if (!response.ok) continue;
+      const json = await response.json();
+      const data = json.data?.item || json.data || json.item || json;
+      const product = normalizeShopeeApiData(data, endpoint);
+      if (hasUsefulScrapedData(product)) return product;
+    } catch {
+      // Try the next endpoint; Shopee sometimes blocks one route but not another.
+    }
+  }
+  return null;
 }
 
 async function enrichProductWithGroq(url, context) {
@@ -80,6 +141,8 @@ Title: ${context.title}
 Description: ${context.description}
 Price: ${context.price}
 Snippet: ${context.snippet}
+Shopee API product data:
+${formatShopeeApiProduct(context.shopeeApi)}
 Web search query: ${context.webSearch?.query || "-"}
 Web search results:
 ${formatSearchResults(context.webSearch?.results)}
@@ -90,6 +153,7 @@ Aturan kualitas:
 - Nama produk harus natural untuk pembeli Indonesia, 3-10 kata, bukan kode link, bukan token acak, bukan nama toko.
 - Buat "description" sebagai deskripsi produk 2-3 kalimat dalam bahasa Indonesia yang enak dipakai di dashboard affiliate.
 - Description harus menjelaskan produk, kegunaan, target pembeli, dan konteks pemakaian. Jangan hanya mengulang nama produk.
+- Jika Shopee API product data tersedia, itu sumber paling kuat dan harus diprioritaskan.
 - Gunakan scraped product data sebagai sumber utama untuk judul/deskripsi/kategori/harga/selling point.
 - Gunakan hasil web search hanya untuk melengkapi jika scraped product data kurang lengkap.
 - Jika beberapa scraped page bertentangan, prioritaskan halaman Shopee/final URL dan data yang paling spesifik menyebut produk.
@@ -141,7 +205,7 @@ async function fetchWebSearchContext(url, context) {
   }
 }
 
-async function scrapeCandidatePages(originalUrl, pageContext, webContext) {
+async function scrapeCandidatePages(originalUrl, pageContext, webContext, shopeeApi) {
   const urls = [
     pageContext.source,
     originalUrl,
@@ -149,7 +213,7 @@ async function scrapeCandidatePages(originalUrl, pageContext, webContext) {
   ].filter(Boolean);
   const uniqueUrls = [...new Set(urls)].filter((value) => /^https?:\/\//i.test(value)).slice(0, 4);
   const pages = await Promise.all(uniqueUrls.map(scrapeProductPage));
-  return pages.filter((page) => hasUsefulScrapedData(page)).slice(0, 4);
+  return [shopeeApi, ...pages].filter((page) => page && hasUsefulScrapedData(page)).slice(0, 5);
 }
 
 async function scrapeProductPage(url) {
@@ -259,9 +323,64 @@ function decodeSearchUrl(value) {
   }
 }
 
+function extractRedirectUrl(html, baseUrl) {
+  const candidates = [
+    html.match(/<meta[^>]+http-equiv=["']refresh["'][^>]+content=["'][^"']*url=([^"']+)["']/i)?.[1],
+    html.match(/location(?:\.href)?\s*=\s*["']([^"']+)["']/i)?.[1],
+    html.match(/location\.replace\(["']([^"']+)["']\)/i)?.[1],
+    html.match(/<link[^>]+rel=["']canonical["'][^>]+href=["']([^"']+)["']/i)?.[1],
+    html.match(/https?:\\?\/\\?\/shopee\.co\.id\\?\/[^"'<\s]+/i)?.[0],
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    const normalized = decodeUnicodeEscapes(candidate).replaceAll("\\/", "/").replaceAll("&amp;", "&").trim();
+    try {
+      const resolved = new URL(normalized, baseUrl).toString();
+      if (/shopee\.co\.id/i.test(resolved)) return resolved;
+    } catch {
+      // Ignore malformed redirect candidates.
+    }
+  }
+  return "";
+}
+
+function extractShopeeIds(value) {
+  const text = decodeURIComponent(String(value || ""));
+  const patterns = [
+    /(?:^|[./-])i\.(\d+)\.(\d+)(?:[/?#]|$)/i,
+    /\/product\/(\d+)\/(\d+)(?:[/?#]|$)/i,
+    /[?&]shopid=(\d+).*?[?&]itemid=(\d+)/i,
+    /[?&]shop_id=(\d+).*?[?&]item_id=(\d+)/i,
+    /[?&]itemid=(\d+).*?[?&]shopid=(\d+)/i,
+    /[?&]item_id=(\d+).*?[?&]shop_id=(\d+)/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (!match) continue;
+    const reversed = pattern.source.startsWith("[?&]item");
+    return reversed ? { shopId: match[2], itemId: match[1] } : { shopId: match[1], itemId: match[2] };
+  }
+  return null;
+}
+
 function formatSearchResults(results = []) {
   if (!results.length) return "-";
   return results.map((item, index) => `${index + 1}. Title: ${item.title || "-"}\n   Snippet: ${item.snippet || "-"}\n   URL: ${item.url || "-"}`).join("\n");
+}
+
+function formatShopeeApiProduct(product) {
+  if (!product) return "-";
+  return [
+    `Source: ${product.source || "Shopee API"}`,
+    `Title: ${product.title || "-"}`,
+    `Description: ${product.description || "-"}`,
+    `Price: ${product.price || "-"}`,
+    `Brand: ${product.brand || "-"}`,
+    `Rating: ${product.rating || "-"}`,
+    `Sold: ${product.sold || "-"}`,
+    `Categories: ${product.categories?.join(" > ") || "-"}`,
+    `Specs: ${product.specs?.join("; ") || "-"}`,
+  ].join("\n");
 }
 
 function formatScrapedPages(pages = []) {
@@ -499,6 +618,34 @@ function findProductJsonLd(value) {
   return findProductJsonLd(value["@graph"]);
 }
 
+function normalizeShopeeApiData(data, source) {
+  const item = data?.item_basic || data?.item || data || {};
+  const categories = [
+    ...(data?.categories || []),
+    ...(item.categories || []),
+  ].map((category) => category.display_name || category.cat_name || category.name).filter(Boolean);
+  const specs = [
+    ...(item.attributes || []),
+    ...(data?.attributes || []),
+  ].map(formatSpec).filter(Boolean);
+  const image = pickShopeeImage(item.image || item.images?.[0] || data?.image || data?.images?.[0]);
+  const rating = item.item_rating?.rating_star || data?.item_rating?.rating_star || item.rating_star || data?.rating_star || "";
+
+  return {
+    source,
+    title: cleanTitle(item.name || data?.name || ""),
+    description: cleanDescription(item.description || data?.description || ""),
+    price: normalizeShopeePrice(item.price_min || item.price || data?.price_min || data?.price),
+    image,
+    brand: cleanText(item.brand || data?.brand || ""),
+    rating: rating ? String(Math.round(Number(rating) * 10) / 10) : "",
+    sold: cleanText(item.historical_sold || item.sold || data?.historical_sold || data?.sold || ""),
+    categories: uniqueList(categories).slice(0, 6),
+    specs: uniqueList(specs).slice(0, 14),
+    snippet: cleanText(item.description || data?.description || "").slice(0, 700),
+  };
+}
+
 function extractEmbeddedProductData(html) {
   const scripts = html.match(/<script\b[^>]*>[\s\S]*?<\/script>/gi) || [];
   const candidates = [];
@@ -692,8 +839,25 @@ function pickImage(value) {
   return /^https?:\/\//i.test(String(value || "")) ? value : "";
 }
 
+function pickShopeeImage(value) {
+  const image = Array.isArray(value) ? value.find(Boolean) : value;
+  if (!image) return "";
+  if (/^https?:\/\//i.test(image)) return image;
+  return `https://down-id.img.susercontent.com/file/${image}`;
+}
+
 function bestScrapedPage(context) {
   return (context.scrapedPages || []).find((page) => page.title || page.description || page.price) || context.scraped;
+}
+
+function isGenericProduct(product) {
+  const name = cleanText(product?.name).toLowerCase();
+  return !name || /^(produk affiliate shopee|produk shopee|produk harian|produk)$/i.test(name) || product?.confidence === "low";
+}
+
+function hasStrongProductEvidence(context) {
+  const pages = [context.shopeeApi, ...(context.scrapedPages || []), context.scraped].filter(Boolean);
+  return pages.some((page) => page.title && !isBadProductName(page.title) && (page.description || page.price || page.specs?.length || page.categories?.length));
 }
 
 function uniqueList(values = []) {
