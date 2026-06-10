@@ -10,7 +10,7 @@ const FETCH_HEADERS = {
 
 export async function POST(request) {
   try {
-    const { url } = await request.json();
+    const { url, hints = {} } = await request.json();
     if (!url) {
       return NextResponse.json({ ok: false, error: "Link produk wajib diisi." }, { status: 400 });
     }
@@ -24,10 +24,11 @@ export async function POST(request) {
     const shopeeIds = extractShopeeIds(pageContext.source) || extractShopeeIds(resolvedUrl) || extractShopeeIds(url);
     const shopeeApi = shopeeIds ? await fetchShopeeApiProduct(shopeeIds, pageContext.source) : null;
     const scrapedPages = await scrapeCandidatePages(url, pageContext, webContext, shopeeApi);
-    const context = { ...pageContext, webSearch: webContext, scrapedPages, shopeeApi };
+    const userHints = normalizeUserHints(hints);
+    const context = { ...pageContext, webSearch: webContext, scrapedPages, shopeeApi, userHints };
     const product = await enrichProductWithGroq(url, context);
     if (isGenericProduct(product) && !hasStrongProductEvidence(context)) {
-      throw new Error("Data produk belum berhasil di-scrape dari link Shopee. Coba gunakan link produk Shopee asli yang panjang, bukan short affiliate link.");
+      throw new Error("Data produk belum berhasil diambil dari Shopee karena endpoint Shopee memblokir request server. Isi Judul Produk atau Data Produk opsional, lalu coba lagi.");
     }
     return NextResponse.json({ ok: true, product, source: pageContext.source, webSearch: webContext, scrapedPages });
   } catch (error) {
@@ -137,6 +138,9 @@ async function enrichProductWithGroq(url, context) {
 
 Link: ${url}
 Final URL: ${context.source}
+User-provided product data:
+Title: ${context.userHints?.title || "-"}
+Notes: ${context.userHints?.notes || "-"}
 Title: ${context.title}
 Description: ${context.description}
 Price: ${context.price}
@@ -153,6 +157,7 @@ Aturan kualitas:
 - Nama produk harus natural untuk pembeli Indonesia, 3-10 kata, bukan kode link, bukan token acak, bukan nama toko.
 - Buat "description" sebagai deskripsi produk 2-3 kalimat dalam bahasa Indonesia yang enak dipakai di dashboard affiliate.
 - Description harus menjelaskan produk, kegunaan, target pembeli, dan konteks pemakaian. Jangan hanya mengulang nama produk.
+- Jika User-provided product data tersedia, prioritaskan data itu karena berasal dari halaman Shopee yang dilihat user.
 - Jika Shopee API product data tersedia, itu sumber paling kuat dan harus diprioritaskan.
 - Gunakan scraped product data sebagai sumber utama untuk judul/deskripsi/kategori/harga/selling point.
 - Gunakan hasil web search hanya untuk melengkapi jika scraped product data kurang lengkap.
@@ -344,6 +349,13 @@ function extractRedirectUrl(html, baseUrl) {
   return "";
 }
 
+function normalizeUserHints(hints = {}) {
+  return {
+    title: cleanTitle(hints.title || ""),
+    notes: cleanDescription(hints.notes || "") || cleanText(hints.notes || "").slice(0, 1200),
+  };
+}
+
 function extractShopeeIds(value) {
   const text = decodeURIComponent(String(value || ""));
   const patterns = [
@@ -461,7 +473,7 @@ function extractJson(content) {
 
 function normalizeProduct(parsed, context) {
   const bestScraped = bestScrapedPage(context);
-  const fallbackName = inferNameFromContext({ ...context, title: context.title || bestScraped?.title || "" });
+  const fallbackName = inferNameFromContext({ ...context, title: context.userHints?.title || context.title || bestScraped?.title || "" });
   let name = cleanProductName(parsed.name) || fallbackName;
   let confidence = normalizeConfidence(parsed.confidence);
   if (isBadProductName(name)) {
@@ -471,8 +483,8 @@ function normalizeProduct(parsed, context) {
 
   const sellingPoints = normalizeList(parsed.sellingPoints).filter((item) => !isBadProductName(item));
   const keywords = normalizeList(parsed.keywords).filter((item) => !isBadProductName(item));
-  const category = cleanText(parsed.category) || bestScraped?.categories?.at(-1) || inferCategory(`${context.title} ${context.description} ${bestScraped?.title || ""}`);
-  const description = cleanDescription(parsed.description) || bestScraped?.description || buildDescription(name, category, parsed.audience, context);
+  const category = cleanText(parsed.category) || bestScraped?.categories?.at(-1) || inferCategory(`${context.userHints?.title || ""} ${context.userHints?.notes || ""} ${context.title} ${context.description} ${bestScraped?.title || ""}`);
+  const description = cleanDescription(parsed.description) || context.userHints?.notes || bestScraped?.description || buildDescription(name, category, parsed.audience, context);
 
   return {
     name,
@@ -509,6 +521,7 @@ function inferNameFromContext(context) {
 }
 
 function buildDescription(name, category, audience, context) {
+  if (context.userHints?.notes) return cleanDescription(context.userHints.notes) || context.userHints.notes.slice(0, 420);
   if (context.description) return cleanDescription(context.description);
   const scraped = bestScrapedPage(context);
   if (scraped?.description) return cleanDescription(scraped.description);
@@ -856,6 +869,7 @@ function isGenericProduct(product) {
 }
 
 function hasStrongProductEvidence(context) {
+  if (context.userHints?.title || context.userHints?.notes) return true;
   const pages = [context.shopeeApi, ...(context.scrapedPages || []), context.scraped].filter(Boolean);
   return pages.some((page) => page.title && !isBadProductName(page.title) && (page.description || page.price || page.specs?.length || page.categories?.length));
 }

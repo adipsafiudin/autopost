@@ -132,7 +132,13 @@ export default function AffiliateDashboard() {
     try {
       const result = await apiJson("/api/products/enrich", {
         method: "POST",
-        body: JSON.stringify({ url }),
+        body: JSON.stringify({
+          url,
+          hints: {
+            title: data.productTitle?.trim() || "",
+            notes: data.productNotes?.trim() || "",
+          },
+        }),
       });
       update((draft) => {
         draft.products.unshift({
@@ -582,9 +588,11 @@ function Products({ state, importStatus, editingProductId, onAdd, onGenerate, on
     <div className="grid two">
       <section className="panel">
         <h2>Input Link Produk</h2>
-        <p className="muted">Tempel link produk atau link affiliate Shopee. AI Groq akan membuat profil awal, lalu kamu bisa edit manual sebelum dipakai generate konten.</p>
+        <p className="muted">Tempel link produk. Kalau Shopee memblokir scrape, isi judul/catatan produk agar Groq tetap punya data akurat untuk dirapikan.</p>
         <form className="form" onSubmit={onAdd}>
           <label>Link produk / affiliate Shopee<input name="affiliateUrl" required placeholder="https://shopee.co.id/... atau https://s.shopee.co.id/..." /></label>
+          <label>Judul produk opsional<input name="productTitle" placeholder="Paste judul produk dari Shopee kalau hasil scrape kosong" /></label>
+          <label>Data produk opsional<textarea name="productNotes" placeholder="Paste deskripsi, varian, harga, rating, terjual, atau spesifikasi dari halaman Shopee." /></label>
           <button className="primary" disabled={importStatus.status === "loading"} type="submit">
             {importStatus.status === "loading" ? "Membuat profil..." : "Buat produk dengan AI"}
           </button>
