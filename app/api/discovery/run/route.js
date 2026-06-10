@@ -17,6 +17,20 @@ export async function POST(request) {
       const products = payload.products || [];
       const nested = await Promise.all(products.map((product) => searchThreadsByProduct(product, payload.manualQuery || "")));
       const opportunities = nested.flat();
+      if (!opportunities.length) {
+        return NextResponse.json({
+          mode: "threads_keyword_search_fallback_ideas",
+          opportunities: buildMockOpportunities(products, payload.settings || {}).map((item) => ({
+            ...item,
+            platform: "Ide konten fallback",
+            targetThreadId: "",
+            canReplyLive: false,
+          })),
+          searchedProducts: products.length,
+          manualQuery: payload.manualQuery || "",
+          fallbackReason: "Threads keyword search mengembalikan 0 hasil live. Ide konten dibuat agar flow post tetap berjalan.",
+        });
+      }
       return NextResponse.json({
         mode: "threads_keyword_search",
         opportunities,

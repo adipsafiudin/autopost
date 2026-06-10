@@ -223,7 +223,7 @@ export default function AffiliateDashboard() {
         draft.search = {
           status: count ? "success" : "empty",
           message: count
-            ? `Ditemukan ${count} konten live dari produk yang dipilih, ${added} target baru ditambahkan.`
+            ? `${String(result.mode || "").includes("fallback") ? "Threads live belum menemukan target reply, jadi dibuat ide konten: " : ""}Ditemukan ${count} konten dari produk yang dipilih, ${added} target baru ditambahkan.`
             : `Threads live belum menemukan post dengan Thread ID untuk produk ini. Coba keyword yang lebih umum atau cari lagi nanti.`,
           lastCount: count,
           lastMode: result.mode || "provider",
@@ -285,6 +285,27 @@ export default function AffiliateDashboard() {
       opportunity.status = "scored";
     });
     addLog("success", "Reply draft masuk approval queue");
+  }
+
+  function createPostFromOpportunity(opportunityId) {
+    update((draft) => {
+      const opportunity = draft.opportunities.find((item) => item.id === opportunityId);
+      const product = draft.products.find((item) => item.id === opportunity?.productId);
+      if (!opportunity || !product) return;
+      const point = splitList(product.sellingPoints)[0] || "praktis untuk kebutuhan harian";
+      const caption = `Banyak yang cari rekomendasi ${product.category || product.name}. ${product.name} bisa jadi opsi karena ${point}.\n\n${product.description || opportunity.text}\n\n${product.affiliateUrl}\n${draft.settings.disclosure}`;
+      if (draft.drafts.some((item) => item.caption.trim().toLowerCase() === caption.trim().toLowerCase())) return;
+      draft.drafts.unshift({
+        id: makeId("draft"),
+        productId: product.id,
+        caption,
+        status: "draft",
+        createdAt: new Date().toISOString(),
+      });
+      opportunity.status = "scored";
+    });
+    addLog("success", "Ide konten dibuat menjadi post draft");
+    setActiveView("generate");
   }
 
   function addManualReply(event) {
@@ -504,8 +525,8 @@ export default function AffiliateDashboard() {
         </section>
         <FlowStatus state={state} backendStatus={backendStatus} onConnect={connectThreads} onRefresh={() => refreshBackendStatus()} setActiveView={setActiveView} />
         {activeView === "products" && <Products state={state} importStatus={productImport} editingProductId={editingProductId} onAdd={addProduct} onGenerate={generateProduct} onFind={(id) => findOpportunities(id)} onToggle={(id) => update((draft) => { const p = draft.products.find((item) => item.id === id); if (p) p.status = p.status === "active" ? "paused" : "active"; })} onEdit={setEditingProductId} onCancelEdit={() => setEditingProductId(null)} onSave={saveProduct} onDelete={deleteProduct} setActiveView={setActiveView} />}
-        {activeView === "search" && <SearchContent state={state} onFind={(productId) => findOpportunities(productId)} onFindAll={() => findOpportunities()} onQueue={createReply} onReject={(id) => update((draft) => { const item = draft.opportunities.find((entry) => entry.id === id); if (item) item.status = "rejected"; })} />}
-        {activeView === "generate" && <GenerateContent state={state} onGenerate={generateAllDrafts} onQueue={createReply} onApprove={approveDraft} onPostNow={postNow} onReject={(id) => update((draft) => { const item = draft.drafts.find((entry) => entry.id === id); if (item) item.status = "rejected"; })} />}
+        {activeView === "search" && <SearchContent state={state} onFind={(productId) => findOpportunities(productId)} onFindAll={() => findOpportunities()} onPostIdea={createPostFromOpportunity} onQueue={createReply} onReject={(id) => update((draft) => { const item = draft.opportunities.find((entry) => entry.id === id); if (item) item.status = "rejected"; })} />}
+        {activeView === "generate" && <GenerateContent state={state} onGenerate={generateAllDrafts} onPostIdea={createPostFromOpportunity} onQueue={createReply} onApprove={approveDraft} onPostNow={postNow} onReject={(id) => update((draft) => { const item = draft.drafts.find((entry) => entry.id === id); if (item) item.status = "rejected"; })} />}
         {activeView === "publish" && <PublishCenter state={state} onPostNow={postNow} onReplyNow={replyNow} onRun={runScheduler} onSkipReply={(id) => update((draft) => { const item = draft.replies.find((entry) => entry.id === id); if (item) item.status = "skipped"; })} />}
         {activeView === "settings" && <Settings state={state} onSave={(settings) => update((draft) => { draft.settings = settings; })} />}
       </main>
@@ -709,7 +730,7 @@ function ProductEditCard({ product, onSave, onCancel }) {
   );
 }
 
-function SearchContent({ state, onFind, onFindAll, onQueue, onReject }) {
+function SearchContent({ state, onFind, onFindAll, onPostIdea, onQueue, onReject }) {
   const opportunities = state.opportunities.filter((item) => item.status === "queued");
   const liveMode = state.settings.threadsMode === "live";
   return (
@@ -749,16 +770,17 @@ function SearchContent({ state, onFind, onFindAll, onQueue, onReject }) {
         )) : <Empty label="Belum ada produk" />}
       </div>
       <div className="grid two" style={{ marginTop: 14 }}>
-        {opportunities.length ? opportunities.map((item) => <OpportunityCard isLiveMode={liveMode} key={item.id} item={item} product={state.products.find((p) => p.id === item.productId)} onReply={() => onQueue(item.id)} onReject={() => onReject(item.id)} />) : <Empty label="Belum ada target reply" />}
+        {opportunities.length ? opportunities.map((item) => <OpportunityCard isLiveMode={liveMode} key={item.id} item={item} product={state.products.find((p) => p.id === item.productId)} onPostIdea={() => onPostIdea(item.id)} onReply={() => onQueue(item.id)} onReject={() => onReject(item.id)} />) : <Empty label="Belum ada target reply" />}
       </div>
     </>
   );
 }
 
-function GenerateContent({ state, onGenerate, onQueue, onApprove, onPostNow, onReject }) {
+function GenerateContent({ state, onGenerate, onPostIdea, onQueue, onApprove, onPostNow, onReject }) {
   const drafts = state.drafts.filter((item) => item.status === "draft");
   const opportunities = state.opportunities.filter((item) => item.status === "queued");
   const replies = state.replies.filter((item) => item.status === "draft");
+  const liveMode = state.settings.threadsMode === "live";
   return (
     <>
       <section className="panel">
@@ -778,7 +800,11 @@ function GenerateContent({ state, onGenerate, onQueue, onApprove, onPostNow, onR
               <strong>{item.author}</strong>
               <p>{item.text}</p>
               <span className="muted">Produk: {state.products.find((p) => p.id === item.productId)?.name || "-"}</span>
-              <button className="secondary" onClick={() => onQueue(item.id)} type="button">Generate reply</button>
+              {liveMode && !item.targetThreadId ? (
+                <button className="secondary" onClick={() => onPostIdea(item.id)} type="button">Buat post dari ide</button>
+              ) : (
+                <button className="secondary" onClick={() => onQueue(item.id)} type="button">Generate reply</button>
+              )}
             </article>
           )) : <Empty label="Belum ada target" />}
         </section>
@@ -987,9 +1013,9 @@ function ContentCard({ item, product, onApprove, onPostNow, onReject }) {
   return <article className="card"><div className="card-header"><span className="badge">{item.status}</span><span className="muted">{product?.name || "Produk"}</span></div><p className="copy">{item.caption}</p><div className="actions"><button className="primary" onClick={onPostNow} type="button">Post now</button><button className="secondary" onClick={onApprove} type="button">Approve</button><button className="danger" onClick={onReject} type="button">Reject</button></div></article>;
 }
 
-function OpportunityCard({ item, product, isLiveMode, onReply, onReject }) {
+function OpportunityCard({ item, product, isLiveMode, onPostIdea, onReply, onReject }) {
   const canReplyLive = !isLiveMode || Boolean(item.targetThreadId);
-  return <article className="card"><div className="card-header"><div><h3>{item.author}</h3><span className={`badge ${item.totalScore > 75 ? "ok" : item.spamRisk > 45 ? "danger" : "warn"}`}>score {item.totalScore}</span></div><span className="muted">{item.platform}</span></div><p className="copy">{item.text}</p><p><strong>Produk:</strong> {product?.name || "-"}</p><p className="muted">Target thread ID: {item.targetThreadId || "belum tersedia"}</p>{isLiveMode && !item.targetThreadId ? <p className="muted">Target ini bukan hasil Threads live, jadi tidak bisa dikirim sebagai reply live.</p> : null}<p className="muted">{item.reason}</p><Scores item={item} /><div className="actions"><button className="primary" disabled={!canReplyLive} onClick={onReply} type="button">{canReplyLive ? "Queue reply" : "Tidak bisa reply live"}</button><button className="ghost" onClick={onReject} type="button">Reject</button></div></article>;
+  return <article className="card"><div className="card-header"><div><h3>{item.author}</h3><span className={`badge ${item.totalScore > 75 ? "ok" : item.spamRisk > 45 ? "danger" : "warn"}`}>score {item.totalScore}</span></div><span className="muted">{item.platform}</span></div><p className="copy">{item.text}</p><p><strong>Produk:</strong> {product?.name || "-"}</p><p className="muted">Target thread ID: {item.targetThreadId || "belum tersedia"}</p>{isLiveMode && !item.targetThreadId ? <p className="muted">Threads live belum memberi post ID. Ide ini bisa dibuat jadi post utama, bukan reply live.</p> : null}<p className="muted">{item.reason}</p><Scores item={item} /><div className="actions">{canReplyLive ? <button className="primary" onClick={onReply} type="button">Queue reply</button> : <button className="primary" onClick={onPostIdea} type="button">Buat post dari ide</button>}<button className="ghost" onClick={onReject} type="button">Reject</button></div></article>;
 }
 
 function Scores({ item }) {
