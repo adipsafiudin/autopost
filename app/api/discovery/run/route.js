@@ -15,10 +15,12 @@ export async function POST(request) {
 
     if (payload.settings?.threadsMode === "live") {
       const products = payload.products || [];
-      const nested = await Promise.all(products.map((product) => searchThreadsByProduct(product)));
+      const nested = await Promise.all(products.map((product) => searchThreadsByProduct(product, payload.manualQuery || "")));
       return NextResponse.json({
         mode: "threads_keyword_search",
         opportunities: nested.flat(),
+        searchedProducts: products.length,
+        manualQuery: payload.manualQuery || "",
       });
     }
 

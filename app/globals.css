@@ -301,6 +301,41 @@ nav {
   border-top: 1px solid var(--line);
 }
 
+.search-form {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) auto;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.inline-status {
+  display: grid;
+  gap: 4px;
+  margin-top: 12px;
+  border-radius: 8px;
+  padding: 12px;
+  background: #f8fafc;
+  border: 1px solid var(--line);
+}
+
+.inline-status.error {
+  background: #fff1f2;
+  border-color: #fecdd3;
+  color: #9f1239;
+}
+
+.inline-status.empty {
+  background: #fffbeb;
+  border-color: #fde68a;
+  color: #92400e;
+}
+
+.inline-status.success {
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+  color: #065f46;
+}
+
 .card h3,
 .panel h2 {
   margin: 0 0 10px;
@@ -444,5 +479,9 @@ textarea {
   .topbar {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .search-form {
+    grid-template-columns: 1fr;
   }
 }

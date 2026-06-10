@@ -29,6 +29,7 @@ const initialState = {
   opportunities: [],
   replies: [],
   logs: [],
+  search: { status: "idle", message: "", lastCount: 0, lastMode: "" },
   settings: defaultSettings,
 };
 
@@ -47,7 +48,7 @@ export default function AffiliateDashboard() {
     const saved = localStorage.getItem(STORE_KEY);
     if (saved) {
       const parsed = JSON.parse(saved);
-      setState({ ...parsed, settings: { ...defaultSettings, ...(parsed.settings || {}) } });
+      setState({ ...parsed, search: { ...initialState.search, ...(parsed.search || {}) }, settings: { ...defaultSettings, ...(parsed.settings || {}) } });
     }
     setReady(true);
     refreshBackendStatus(false);
@@ -149,26 +150,46 @@ export default function AffiliateDashboard() {
     });
   }
 
-  async function findOpportunities(productId = null) {
+  async function findOpportunities(productId = null, manualQuery = "") {
     const products = (productId ? state.products.filter((item) => item.id === productId) : state.products).filter((item) => item.status === "active");
+    if (!products.length) {
+      addLog("error", "Belum ada produk aktif untuk dicari");
+      return;
+    }
+    update((draft) => {
+      draft.search = { status: "searching", message: `Mencari konten untuk ${products.length} produk...`, lastCount: 0, lastMode: "" };
+    });
     try {
       const result = await apiJson("/api/discovery/run", {
         method: "POST",
-        body: JSON.stringify({ products, settings: state.settings }),
+        body: JSON.stringify({ products, settings: state.settings, manualQuery }),
       });
-      update((draft) => mergeOpportunities(draft, result.opportunities || []));
-      addLog("success", `Opportunity discovery selesai via ${result.mode || "provider"}`);
+      const count = result.opportunities?.length || 0;
+      update((draft) => {
+        const added = mergeOpportunities(draft, result.opportunities || []);
+        draft.search = {
+          status: count ? "success" : "empty",
+          message: count ? `Ditemukan ${count} konten relevan, ${added} target baru ditambahkan.` : `Threads mengembalikan 0 hasil. Coba keyword yang lebih umum.`,
+          lastCount: count,
+          lastMode: result.mode || "provider",
+        };
+      });
+      addLog(count ? "success" : "info", `Cari konten selesai: ${count} hasil via ${result.mode || "provider"}`);
     } catch (error) {
+      update((draft) => {
+        draft.search = { status: "error", message: error.message, lastCount: 0, lastMode: "error" };
+      });
       addLog("error", `Discovery gagal: ${error.message}`);
     }
   }
 
   function mergeOpportunities(draft, opportunities) {
+    let added = 0;
     opportunities.forEach((candidate) => {
       const product = draft.products.find((item) => item.id === candidate.productId);
       if (!product) return;
       const scored = scoreOpportunity(product, candidate, draft.settings);
-      if (scored.totalScore < 45 || scored.spamRisk > 65) return;
+      if (scored.spamRisk > 80) return;
       if (draft.opportunities.some((item) => item.text === candidate.text && item.productId === product.id)) return;
       draft.opportunities.unshift({
         id: makeId("opp"),
@@ -179,7 +200,9 @@ export default function AffiliateDashboard() {
         ...candidate,
         ...scored,
       });
+      added += 1;
     });
+    return added;
   }
 
   function createReply(opportunityId) {
@@ -421,8 +444,8 @@ export default function AffiliateDashboard() {
           <strong>Alur utama:</strong> input produk, cari konten relevan, generate konten, lalu pilih mau dijadikan post utama atau reply.
         </section>
         <FlowStatus state={state} backendStatus={backendStatus} onConnect={connectThreads} onRefresh={() => refreshBackendStatus()} setActiveView={setActiveView} />
-        {activeView === "products" && <Products state={state} onAdd={addProduct} onGenerate={generateProduct} onFind={findOpportunities} onToggle={(id) => update((draft) => { const p = draft.products.find((item) => item.id === id); if (p) p.status = p.status === "active" ? "paused" : "active"; })} setActiveView={setActiveView} />}
-        {activeView === "search" && <SearchContent state={state} onFind={() => findOpportunities()} onQueue={createReply} onReject={(id) => update((draft) => { const item = draft.opportunities.find((entry) => entry.id === id); if (item) item.status = "rejected"; })} />}
+        {activeView === "products" && <Products state={state} onAdd={addProduct} onGenerate={generateProduct} onFind={(id) => findOpportunities(id)} onToggle={(id) => update((draft) => { const p = draft.products.find((item) => item.id === id); if (p) p.status = p.status === "active" ? "paused" : "active"; })} setActiveView={setActiveView} />}
+        {activeView === "search" && <SearchContent state={state} onFind={(query) => findOpportunities(null, query)} onQueue={createReply} onReject={(id) => update((draft) => { const item = draft.opportunities.find((entry) => entry.id === id); if (item) item.status = "rejected"; })} />}
         {activeView === "generate" && <GenerateContent state={state} onGenerate={generateAllDrafts} onQueue={createReply} onApprove={approveDraft} onPostNow={postNow} onReject={(id) => update((draft) => { const item = draft.drafts.find((entry) => entry.id === id); if (item) item.status = "rejected"; })} />}
         {activeView === "publish" && <PublishCenter state={state} onPostNow={postNow} onReplyNow={replyNow} onRun={runScheduler} onSkipReply={(id) => update((draft) => { const item = draft.replies.find((entry) => entry.id === id); if (item) item.status = "skipped"; })} />}
         {activeView === "settings" && <Settings state={state} onSave={(settings) => update((draft) => { draft.settings = settings; })} />}
@@ -546,16 +569,32 @@ function Products({ state, onAdd, onGenerate, onFind, onToggle, setActiveView })
 
 function SearchContent({ state, onFind, onQueue, onReject }) {
   const opportunities = state.opportunities.filter((item) => item.status === "queued");
+  function submitSearch(event) {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(event.currentTarget).entries());
+    onFind(data.keyword);
+  }
   return (
     <>
       <section className="panel">
         <div className="card-header">
           <div>
             <h2>Cari post orang lain yang relevan</h2>
-            <p className="muted">Sistem memakai keyword produk. Di mode live, ini mencoba Threads Keyword Search; di mode mock, hanya contoh target.</p>
+            <p className="muted">Sistem memakai keyword produk. Kamu juga bisa isi keyword manual supaya hasil lebih luas.</p>
           </div>
-          <button className="primary" onClick={onFind} type="button">Cari konten relevan</button>
         </div>
+        <form className="search-form" onSubmit={submitSearch}>
+          <input name="keyword" placeholder="Keyword opsional, contoh: lap mobil, vacuum mini, lampu kamar" />
+          <button className="primary" disabled={state.search?.status === "searching"} type="submit">
+            {state.search?.status === "searching" ? "Mencari..." : "Cari konten relevan"}
+          </button>
+        </form>
+        {state.search?.message ? (
+          <div className={`inline-status ${state.search.status}`}>
+            <strong>{state.search.status === "error" ? "Search error" : state.search.status === "empty" ? "Tidak ada hasil" : "Status"}</strong>
+            <span>{state.search.message}</span>
+          </div>
+        ) : null}
       </section>
       <div className="grid two" style={{ marginTop: 14 }}>
         {opportunities.length ? opportunities.map((item) => <OpportunityCard key={item.id} item={item} product={state.products.find((p) => p.id === item.productId)} onReply={() => onQueue(item.id)} onReject={() => onReject(item.id)} />) : <Empty label="Belum ada target reply" />}
