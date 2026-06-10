@@ -5,13 +5,12 @@ import { useEffect, useMemo, useState } from "react";
 const STORE_KEY = "affiliateQueue.v2";
 
 const views = [
-  ["dashboard", "Dashboard"],
-  ["products", "Products"],
-  ["drafts", "Post Drafts"],
-  ["opportunities", "Opportunity Finder"],
-  ["replies", "Reply Queue"],
-  ["schedule", "Schedule"],
-  ["monitoring", "Monitoring"],
+  ["setup", "1. Setup"],
+  ["products", "2. Produk"],
+  ["posts", "3. Buat Post"],
+  ["publish", "4. Publish"],
+  ["replies", "5. Reply"],
+  ["monitoring", "6. Monitor"],
   ["settings", "Settings"],
 ];
 
@@ -36,7 +35,7 @@ const initialState = {
 };
 
 export default function AffiliateDashboard() {
-  const [activeView, setActiveView] = useState("dashboard");
+  const [activeView, setActiveView] = useState("setup");
   const [state, setState] = useState(initialState);
   const [ready, setReady] = useState(false);
   const [backendStatus, setBackendStatus] = useState({
@@ -208,6 +207,33 @@ export default function AffiliateDashboard() {
     addLog("success", "Reply draft masuk approval queue");
   }
 
+  function addManualReply(event) {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(event.currentTarget).entries());
+    const product = state.products.find((item) => item.id === data.productId);
+    if (!product) {
+      addLog("error", "Pilih produk sebelum membuat reply");
+      return;
+    }
+    const targetThreadId = extractThreadId(data.targetThreadId);
+    const body = data.body?.trim() || `Bisa cek ${product.name}. Menurutku cocok buat kebutuhan ini karena ${splitList(product.sellingPoints)[0] || "praktis dan value-nya oke"}.\n\n${product.affiliateUrl}\n${state.settings.disclosure}`;
+    update((draft) => {
+      draft.replies.unshift({
+        id: makeId("reply"),
+        productId: product.id,
+        opportunityId: "",
+        status: "draft",
+        body,
+        targetAuthor: data.targetAuthor || "manual target",
+        targetThreadId,
+        platform: "Threads manual target",
+        createdAt: new Date().toISOString(),
+      });
+    });
+    event.currentTarget.reset();
+    addLog("success", "Manual reply draft dibuat");
+  }
+
   function approveDraft(draftId) {
     update((draft) => {
       const item = draft.drafts.find((entry) => entry.id === draftId);
@@ -222,6 +248,11 @@ export default function AffiliateDashboard() {
     update((draft) => {
       const item = draft.replies.find((entry) => entry.id === replyId);
       if (!item) return;
+      if (draft.settings.threadsMode === "live" && !item.targetThreadId) {
+        item.status = "failed";
+        item.error = "Reply live membutuhkan targetThreadId valid. Mock opportunity tidak bisa dikirim ke Threads sungguhan.";
+        return;
+      }
       const approvedToday = draft.replies.filter((reply) => reply.approvedAt?.startsWith(todayKey())).length;
       if (approvedToday >= draft.settings.dailyReplyLimit) {
         item.status = "skipped";
@@ -232,6 +263,27 @@ export default function AffiliateDashboard() {
       item.scheduledAt = nextReplyTime(draft.settings).toISOString();
     });
     addLog("success", "Reply disetujui dan diberi delay");
+  }
+
+  async function replyNow(replyId) {
+    const reply = state.replies.find((item) => item.id === replyId);
+    if (!reply) return;
+    if (state.settings.threadsMode === "live" && !reply.targetThreadId) {
+      markReplyFailed(reply.id, "Reply live membutuhkan targetThreadId valid. Buat manual reply dengan targetThreadId atau gunakan discovery provider resmi.");
+      return;
+    }
+    if (state.settings.threadsMode === "live") {
+      try {
+        const result = await apiJson("/api/threads/reply", { method: "POST", body: JSON.stringify({ text: reply.body, targetThreadId: reply.targetThreadId }) });
+        markReplyPosted(reply.id, result.result?.id || "threads_live_reply");
+      } catch (error) {
+        markReplyFailed(reply.id, error.message);
+      }
+    } else if (state.settings.threadsMode === "api-ready") {
+      markReplyFailed(reply.id, "Pilih mode live dan connect Threads untuk reply sungguhan.");
+    } else {
+      markReplyPosted(reply.id, `mock_reply_${Date.now()}`);
+    }
   }
 
   async function runScheduler() {
@@ -335,10 +387,10 @@ export default function AffiliateDashboard() {
 
   const counts = useMemo(() => ({
     products: state.products.length,
-    drafts: state.drafts.filter((item) => item.status === "draft").length,
+    posts: state.drafts.filter((item) => item.status === "draft").length,
     opportunities: state.opportunities.filter((item) => item.status === "queued").length,
     replies: state.replies.filter((item) => item.status === "draft").length,
-    schedule: state.drafts.filter((item) => item.status === "scheduled").length,
+    publish: state.drafts.filter((item) => item.status === "scheduled").length,
   }), [state]);
 
   return (
@@ -371,12 +423,11 @@ export default function AffiliateDashboard() {
         <section className="notice">
           <strong>Safety mode aktif.</strong> Post harus di-approve. Reply terjadwal hanya berjalan setelah approve dan membutuhkan target thread ID.
         </section>
-        {activeView === "dashboard" && <Dashboard state={state} backendStatus={backendStatus} onGenerate={generateAllDrafts} onFind={() => findOpportunities()} onReply={runReplyScheduler} onConnect={connectThreads} onRefresh={() => refreshBackendStatus()} />}
+        {activeView === "setup" && <Dashboard state={state} backendStatus={backendStatus} onGenerate={generateAllDrafts} onFind={() => findOpportunities()} onReply={runReplyScheduler} onConnect={connectThreads} onRefresh={() => refreshBackendStatus()} setActiveView={setActiveView} />}
         {activeView === "products" && <Products state={state} onAdd={addProduct} onGenerate={generateProduct} onFind={findOpportunities} onToggle={(id) => update((draft) => { const p = draft.products.find((item) => item.id === id); if (p) p.status = p.status === "active" ? "paused" : "active"; })} />}
-        {activeView === "drafts" && <Drafts state={state} onGenerate={generateAllDrafts} onApprove={approveDraft} onPostNow={postNow} onReject={(id) => update((draft) => { const item = draft.drafts.find((entry) => entry.id === id); if (item) item.status = "rejected"; })} />}
-        {activeView === "opportunities" && <Opportunities state={state} onFind={() => findOpportunities()} onReply={createReply} onReject={(id) => update((draft) => { const item = draft.opportunities.find((entry) => entry.id === id); if (item) item.status = "rejected"; })} />}
-        {activeView === "replies" && <Replies state={state} onApprove={approveReply} onSkip={(id) => update((draft) => { const item = draft.replies.find((entry) => entry.id === id); if (item) item.status = "skipped"; })} />}
-        {activeView === "schedule" && <Schedule state={state} onRun={runScheduler} onPostNow={postNow} />}
+        {activeView === "posts" && <Drafts state={state} onGenerate={generateAllDrafts} onApprove={approveDraft} onPostNow={postNow} onReject={(id) => update((draft) => { const item = draft.drafts.find((entry) => entry.id === id); if (item) item.status = "rejected"; })} />}
+        {activeView === "publish" && <Schedule state={state} onRun={runScheduler} onPostNow={postNow} />}
+        {activeView === "replies" && <Replies state={state} onManualReply={addManualReply} onFind={() => findOpportunities()} onQueue={createReply} onApprove={approveReply} onReplyNow={replyNow} onSkip={(id) => update((draft) => { const item = draft.replies.find((entry) => entry.id === id); if (item) item.status = "skipped"; })} />}
         {activeView === "monitoring" && <Monitoring state={state} />}
         {activeView === "settings" && <Settings state={state} onSave={(settings) => update((draft) => { draft.settings = settings; })} />}
       </main>
@@ -384,9 +435,26 @@ export default function AffiliateDashboard() {
   );
 }
 
-function Dashboard({ state, backendStatus, onGenerate, onFind, onReply, onConnect, onRefresh }) {
+function Dashboard({ state, backendStatus, onGenerate, onFind, onReply, onConnect, onRefresh, setActiveView }) {
+  const liveReady = state.settings.threadsMode === "live" && backendStatus.threads?.connected;
   return (
     <>
+      <section className="panel">
+        <div className="flow-header">
+          <div>
+            <h2>Mulai dari sini</h2>
+            <p className="muted">Ikuti langkah berurutan. Untuk posting, cukup tambah produk, buat draft, lalu klik Post now.</p>
+          </div>
+          <span className={`badge ${liveReady ? "ok" : "warn"}`}>{liveReady ? "siap live" : "perlu setup"}</span>
+        </div>
+        <div className="flow-steps">
+          <button className="step-card" onClick={() => setActiveView("settings")} type="button"><strong>1</strong><span>Set mode live</span><small>{state.settings.threadsMode}</small></button>
+          <button className="step-card" onClick={onConnect} type="button"><strong>2</strong><span>Connect Threads</span><small>{backendStatus.threads?.connected ? "connected" : "belum connect"}</small></button>
+          <button className="step-card" onClick={() => setActiveView("products")} type="button"><strong>3</strong><span>Input produk</span><small>{state.products.length} produk</small></button>
+          <button className="step-card" onClick={() => setActiveView("posts")} type="button"><strong>4</strong><span>Buat & post</span><small>{state.drafts.filter((item) => item.status === "draft").length} draft</small></button>
+          <button className="step-card" onClick={() => setActiveView("replies")} type="button"><strong>5</strong><span>Reply manual</span><small>{state.replies.filter((item) => item.status === "draft").length} draft</small></button>
+        </div>
+      </section>
       <div className="grid metrics">
         <Metric label="Produk aktif" value={state.products.filter((item) => item.status === "active").length} />
         <Metric label="Draft pending" value={state.drafts.filter((item) => item.status === "draft").length} />
@@ -396,7 +464,7 @@ function Dashboard({ state, backendStatus, onGenerate, onFind, onReply, onConnec
       <div className="grid two" style={{ marginTop: 14 }}>
         <section className="panel">
           <h2>Daily Control</h2>
-          <p className="muted">Generate konten, temukan opportunity, dan jalankan scheduler dari satu tempat.</p>
+          <p className="muted">Aksi cepat setelah setup selesai.</p>
           <div className="actions">
             <button className="primary" onClick={onGenerate} type="button">Generate all</button>
             <button className="secondary" onClick={onFind} type="button">Find opportunities</button>
@@ -485,11 +553,50 @@ function Opportunities({ state, onFind, onReply, onReject }) {
   );
 }
 
-function Replies({ state, onApprove, onSkip }) {
+function Replies({ state, onManualReply, onFind, onQueue, onApprove, onReplyNow, onSkip }) {
   const replies = state.replies.filter((item) => ["draft", "approved", "failed"].includes(item.status));
+  const opportunities = state.opportunities.filter((item) => item.status === "queued");
   return (
     <>
-      <section className="panel"><h2>Reply Approval Queue</h2><p className="muted">Reply terkirim otomatis hanya setelah approved, scheduled, dan mode sesuai.</p></section>
+      <section className="panel">
+        <h2>Reply yang bisa terkirim live</h2>
+        <p className="muted">Reply live membutuhkan `targetThreadId`. Opportunity mock hanya untuk latihan membuat draft, bukan untuk reply live.</p>
+      </section>
+      <div className="grid two" style={{ marginTop: 14 }}>
+        <section className="panel">
+          <h2>Buat Reply Manual</h2>
+          <form className="form" onSubmit={onManualReply}>
+            <label>Produk
+              <select name="productId" required defaultValue="">
+                <option value="" disabled>Pilih produk</option>
+                {state.products.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}
+              </select>
+            </label>
+            <label>Target Thread ID<input name="targetThreadId" placeholder="Contoh: 18051115952767669" /></label>
+            <label>Target author opsional<input name="targetAuthor" placeholder="@username atau catatan target" /></label>
+            <label>Isi reply opsional<textarea name="body" placeholder="Kosongkan agar sistem generate dari produk" /></label>
+            <button className="primary" type="submit">Buat reply draft</button>
+          </form>
+          <p className="status-note">Kalau kamu belum punya Thread ID dari API/source resmi, tombol Reply now live akan gagal. Ini batasan Threads API, bukan masalah UI.</p>
+        </section>
+        <section className="panel">
+          <div className="card-header">
+            <div>
+              <h2>Opportunity Draft</h2>
+              <p className="muted">Gunakan untuk mencari ide percakapan. Live reply tetap butuh targetThreadId.</p>
+            </div>
+            <button className="secondary" onClick={onFind} type="button">Find</button>
+          </div>
+          {opportunities.length ? opportunities.slice(0, 3).map((item) => (
+            <article className="mini-card" key={item.id}>
+              <strong>{item.author}</strong>
+              <p>{item.text}</p>
+              <span className="muted">Thread ID: {item.targetThreadId || "tidak ada"}</span>
+              <button className="ghost" onClick={() => onQueue(item.id)} type="button">Queue draft</button>
+            </article>
+          )) : <Empty label="Belum ada opportunity" />}
+        </section>
+      </div>
       <div className="grid two" style={{ marginTop: 14 }}>
         {replies.length ? replies.map((reply) => (
           <article className="card" key={reply.id}>
@@ -498,7 +605,11 @@ function Replies({ state, onApprove, onSkip }) {
             <p className="muted">Thread ID: {reply.targetThreadId || "belum tersedia"}</p>
             <p className="copy">{reply.body}</p>
             {reply.error ? <p className="muted">{reply.error}</p> : null}
-            <div className="actions">{reply.status === "draft" ? <button className="primary" onClick={() => onApprove(reply.id)} type="button">Approve reply</button> : null}<button className="danger" onClick={() => onSkip(reply.id)} type="button">Skip</button></div>
+            <div className="actions">
+              <button className="primary" onClick={() => onReplyNow(reply.id)} type="button">Reply now</button>
+              {reply.status === "draft" ? <button className="secondary" onClick={() => onApprove(reply.id)} type="button">Approve</button> : null}
+              <button className="danger" onClick={() => onSkip(reply.id)} type="button">Skip</button>
+            </div>
           </article>
         )) : <Empty label="Belum ada reply draft" />}
       </div>
@@ -616,6 +727,12 @@ function sampleProduct(name, category, price, audience, sellingPoints, keywords)
 
 function splitList(value = "") {
   return String(value).split(/[,;\n]/).map((item) => item.trim()).filter(Boolean);
+}
+
+function extractThreadId(value = "") {
+  const text = String(value).trim();
+  const numeric = text.match(/\d{8,}/);
+  return numeric?.[0] || text;
 }
 
 function money(value) {

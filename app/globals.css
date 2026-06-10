@@ -50,7 +50,9 @@ button {
 .topbar,
 .card-header,
 .actions,
-.score-grid {
+.score-grid,
+.flow-header,
+.flow-steps {
   display: flex;
   gap: 14px;
 }
@@ -228,6 +230,63 @@ nav {
   justify-content: space-between;
 }
 
+.flow-header {
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.flow-steps {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.step-card {
+  display: grid;
+  gap: 6px;
+  min-height: 110px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafc;
+  color: var(--text);
+  padding: 14px;
+  text-align: left;
+}
+
+.step-card:hover {
+  border-color: #99d5ce;
+  background: #eefbf8;
+}
+
+.step-card strong {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: var(--brand);
+  color: #fff;
+}
+
+.step-card span {
+  font-weight: 800;
+}
+
+.step-card small {
+  color: var(--muted);
+}
+
+.mini-card {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding: 12px 0;
+}
+
+.mini-card p {
+  margin: 0;
+}
+
 .card h3,
 .panel h2 {
   margin: 0 0 10px;
@@ -363,7 +422,8 @@ textarea {
 
   .grid.metrics,
   .grid.two,
-  .grid.three {
+  .grid.three,
+  .flow-steps {
     grid-template-columns: 1fr;
   }
 
