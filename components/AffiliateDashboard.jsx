@@ -327,8 +327,7 @@ export default function AffiliateDashboard() {
       const item = draft.replies.find((entry) => entry.id === replyId);
       if (!item) return;
       if (draft.settings.threadsMode === "live" && !item.targetThreadId) {
-        item.status = "failed";
-        item.error = "Reply live membutuhkan targetThreadId valid. Mock opportunity tidak bisa dikirim ke Threads sungguhan.";
+        item.error = "Reply live membutuhkan Thread ID dari post Threads asli.";
         return;
       }
       const approvedToday = draft.replies.filter((reply) => reply.approvedAt?.startsWith(todayKey())).length;
@@ -347,7 +346,7 @@ export default function AffiliateDashboard() {
     const reply = state.replies.find((item) => item.id === replyId);
     if (!reply) return;
     if (state.settings.threadsMode === "live" && !reply.targetThreadId) {
-      markReplyFailed(reply.id, "Reply live membutuhkan targetThreadId valid. Buat manual reply dengan targetThreadId atau gunakan discovery provider resmi.");
+      addLog("error", "Reply live butuh Thread ID dari post Threads asli. Isi Thread ID dulu di kartu reply.");
       return;
     }
     if (state.settings.threadsMode === "live") {
@@ -362,6 +361,25 @@ export default function AffiliateDashboard() {
     } else {
       markReplyPosted(reply.id, `mock_reply_${Date.now()}`);
     }
+  }
+
+  function saveReplyTarget(replyId, event) {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(event.currentTarget).entries());
+    const targetThreadId = extractThreadId(data.targetThreadId);
+    if (!targetThreadId) {
+      addLog("error", "Thread ID wajib diisi sebelum reply live");
+      return;
+    }
+    update((draft) => {
+      const reply = draft.replies.find((item) => item.id === replyId);
+      if (!reply) return;
+      reply.targetThreadId = targetThreadId;
+      reply.targetAuthor = data.targetAuthor?.trim() || reply.targetAuthor;
+      if (reply.status === "failed") reply.status = "draft";
+      reply.error = "";
+    });
+    addLog("success", "Thread ID reply disimpan");
   }
 
   async function runScheduler() {
@@ -504,7 +522,7 @@ export default function AffiliateDashboard() {
         {activeView === "products" && <Products state={state} importStatus={productImport} editingProductId={editingProductId} onAdd={addProduct} onGenerate={generateProduct} onFind={(id) => findOpportunities(id)} onToggle={(id) => update((draft) => { const p = draft.products.find((item) => item.id === id); if (p) p.status = p.status === "active" ? "paused" : "active"; })} onEdit={setEditingProductId} onCancelEdit={() => setEditingProductId(null)} onSave={saveProduct} onDelete={deleteProduct} setActiveView={setActiveView} />}
         {activeView === "search" && <SearchContent state={state} onFind={(productId) => findOpportunities(productId)} onFindAll={() => findOpportunities()} onQueue={createReply} onReject={(id) => update((draft) => { const item = draft.opportunities.find((entry) => entry.id === id); if (item) item.status = "rejected"; })} />}
         {activeView === "generate" && <GenerateContent state={state} onGenerate={generateAllDrafts} onQueue={createReply} onApprove={approveDraft} onPostNow={postNow} onReject={(id) => update((draft) => { const item = draft.drafts.find((entry) => entry.id === id); if (item) item.status = "rejected"; })} />}
-        {activeView === "publish" && <PublishCenter state={state} onPostNow={postNow} onReplyNow={replyNow} onRun={runScheduler} onSkipReply={(id) => update((draft) => { const item = draft.replies.find((entry) => entry.id === id); if (item) item.status = "skipped"; })} />}
+        {activeView === "publish" && <PublishCenter state={state} onPostNow={postNow} onReplyNow={replyNow} onRun={runScheduler} onSaveReplyTarget={saveReplyTarget} onSkipReply={(id) => update((draft) => { const item = draft.replies.find((entry) => entry.id === id); if (item) item.status = "skipped"; })} />}
         {activeView === "settings" && <Settings state={state} onSave={(settings) => update((draft) => { draft.settings = settings; })} />}
       </main>
     </>
@@ -797,9 +815,10 @@ function GenerateContent({ state, onGenerate, onQueue, onApprove, onPostNow, onR
   );
 }
 
-function PublishCenter({ state, onPostNow, onReplyNow, onRun, onSkipReply }) {
+function PublishCenter({ state, onPostNow, onReplyNow, onRun, onSaveReplyTarget, onSkipReply }) {
   const posts = state.drafts.filter((item) => ["draft", "scheduled", "failed", "posted"].includes(item.status));
   const replies = state.replies.filter((item) => ["draft", "approved", "failed", "posted"].includes(item.status));
+  const liveMode = state.settings.threadsMode === "live";
   return (
     <>
       <section className="panel">
@@ -820,12 +839,19 @@ function PublishCenter({ state, onPostNow, onReplyNow, onRun, onSkipReply }) {
           <h2>Reply ke post orang lain</h2>
           {replies.length ? replies.map((reply) => (
             <article className="card" key={reply.id}>
-              <div className="card-header"><span className={`badge ${reply.status === "posted" ? "ok" : reply.status === "failed" ? "danger" : ""}`}>{reply.status}</span><span className="muted">{reply.targetAuthor}</span></div>
+              <div className="card-header"><span className={`badge ${reply.status === "posted" ? "ok" : reply.status === "failed" ? "danger" : !reply.targetThreadId && liveMode ? "warn" : ""}`}>{!reply.targetThreadId && liveMode ? "butuh Thread ID" : reply.status}</span><span className="muted">{reply.targetAuthor}</span></div>
               <p className="muted">Thread ID: {reply.targetThreadId || "belum tersedia"}</p>
               <p className="copy">{reply.body}</p>
               {reply.error ? <p className="muted">{reply.error}</p> : null}
+              {liveMode && !reply.targetThreadId ? (
+                <form className="form compact-form" onSubmit={(event) => onSaveReplyTarget(reply.id, event)}>
+                  <label>Thread URL / ID<input name="targetThreadId" placeholder="Paste URL post Threads atau ID post asli" /></label>
+                  <label>Target author opsional<input name="targetAuthor" defaultValue={reply.targetAuthor || ""} /></label>
+                  <button className="secondary" type="submit">Simpan Thread ID</button>
+                </form>
+              ) : null}
               <div className="actions">
-                {reply.status !== "posted" ? <button className="primary" onClick={() => onReplyNow(reply.id)} type="button">Reply now</button> : null}
+                {reply.status !== "posted" ? <button className="primary" disabled={liveMode && !reply.targetThreadId} onClick={() => onReplyNow(reply.id)} type="button">{liveMode && !reply.targetThreadId ? "Isi Thread ID dulu" : "Reply now"}</button> : null}
                 <button className="danger" onClick={() => onSkipReply(reply.id)} type="button">Skip</button>
               </div>
             </article>
@@ -1041,8 +1067,12 @@ function splitList(value = "") {
 
 function extractThreadId(value = "") {
   const text = String(value).trim();
+  const postPath = text.match(/\/post\/([A-Za-z0-9_-]+)/i);
+  if (postPath?.[1]) return postPath[1];
   const numeric = text.match(/\d{8,}/);
-  return numeric?.[0] || text;
+  if (numeric?.[0]) return numeric[0];
+  const compact = text.match(/[A-Za-z0-9_-]{8,}/);
+  return compact?.[0] || text;
 }
 
 function money(value) {
