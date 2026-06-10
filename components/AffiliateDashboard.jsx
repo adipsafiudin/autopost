@@ -239,19 +239,36 @@ export default function AffiliateDashboard() {
     let remaining = Math.max(0, state.settings.dailyPostLimit - state.drafts.filter((item) => item.postedAt?.startsWith(todayKey())).length);
     for (const draft of dueDrafts) {
       if (remaining <= 0) break;
-      if (state.settings.threadsMode === "live") {
-        try {
-          const result = await apiJson("/api/threads/publish", { method: "POST", body: JSON.stringify({ text: draft.caption }) });
-          markDraftPosted(draft.id, result.result?.id || "threads_live_post");
-        } catch (error) {
-          markDraftFailed(draft.id, error.message);
-        }
-      } else {
-        markDraftPosted(draft.id, `mock_threads_${Date.now()}`);
-      }
+      await publishDraft(draft);
       remaining -= 1;
     }
     await runReplyScheduler();
+  }
+
+  async function postNow(draftId) {
+    const draft = state.drafts.find((item) => item.id === draftId);
+    if (!draft) return;
+    const postedToday = state.drafts.filter((item) => item.postedAt?.startsWith(todayKey())).length;
+    if (postedToday >= state.settings.dailyPostLimit) {
+      addLog("error", "Daily post limit tercapai. Naikkan limit di Settings jika perlu.");
+      return;
+    }
+    await publishDraft(draft);
+  }
+
+  async function publishDraft(draft) {
+    if (state.settings.threadsMode === "live") {
+      try {
+        const result = await apiJson("/api/threads/publish", { method: "POST", body: JSON.stringify({ text: draft.caption }) });
+        markDraftPosted(draft.id, result.result?.id || "threads_live_post");
+      } catch (error) {
+        markDraftFailed(draft.id, error.message);
+      }
+    } else if (state.settings.threadsMode === "api-ready") {
+      markDraftFailed(draft.id, "Pilih mode live dan connect Threads untuk publish sungguhan.");
+    } else {
+      markDraftPosted(draft.id, `mock_threads_${Date.now()}`);
+    }
   }
 
   async function runReplyScheduler() {
@@ -356,10 +373,10 @@ export default function AffiliateDashboard() {
         </section>
         {activeView === "dashboard" && <Dashboard state={state} backendStatus={backendStatus} onGenerate={generateAllDrafts} onFind={() => findOpportunities()} onReply={runReplyScheduler} onConnect={connectThreads} onRefresh={() => refreshBackendStatus()} />}
         {activeView === "products" && <Products state={state} onAdd={addProduct} onGenerate={generateProduct} onFind={findOpportunities} onToggle={(id) => update((draft) => { const p = draft.products.find((item) => item.id === id); if (p) p.status = p.status === "active" ? "paused" : "active"; })} />}
-        {activeView === "drafts" && <Drafts state={state} onGenerate={generateAllDrafts} onApprove={approveDraft} onReject={(id) => update((draft) => { const item = draft.drafts.find((entry) => entry.id === id); if (item) item.status = "rejected"; })} />}
+        {activeView === "drafts" && <Drafts state={state} onGenerate={generateAllDrafts} onApprove={approveDraft} onPostNow={postNow} onReject={(id) => update((draft) => { const item = draft.drafts.find((entry) => entry.id === id); if (item) item.status = "rejected"; })} />}
         {activeView === "opportunities" && <Opportunities state={state} onFind={() => findOpportunities()} onReply={createReply} onReject={(id) => update((draft) => { const item = draft.opportunities.find((entry) => entry.id === id); if (item) item.status = "rejected"; })} />}
         {activeView === "replies" && <Replies state={state} onApprove={approveReply} onSkip={(id) => update((draft) => { const item = draft.replies.find((entry) => entry.id === id); if (item) item.status = "skipped"; })} />}
-        {activeView === "schedule" && <Schedule state={state} onRun={runScheduler} />}
+        {activeView === "schedule" && <Schedule state={state} onRun={runScheduler} onPostNow={postNow} />}
         {activeView === "monitoring" && <Monitoring state={state} />}
         {activeView === "settings" && <Settings state={state} onSave={(settings) => update((draft) => { draft.settings = settings; })} />}
       </main>
@@ -442,7 +459,7 @@ function Products({ state, onAdd, onGenerate, onFind, onToggle }) {
   );
 }
 
-function Drafts({ state, onGenerate, onApprove, onReject }) {
+function Drafts({ state, onGenerate, onApprove, onPostNow, onReject }) {
   const drafts = state.drafts.filter((item) => item.status === "draft");
   return (
     <>
@@ -450,7 +467,7 @@ function Drafts({ state, onGenerate, onApprove, onReject }) {
         <div className="card-header"><div><h2>Post Drafts</h2><p className="muted">Approve satu per satu sebelum masuk schedule.</p></div><button className="primary" onClick={onGenerate} type="button">Generate drafts</button></div>
       </section>
       <div className="grid three" style={{ marginTop: 14 }}>
-        {drafts.length ? drafts.map((draft) => <ContentCard key={draft.id} item={draft} product={state.products.find((p) => p.id === draft.productId)} onApprove={() => onApprove(draft.id)} onReject={() => onReject(draft.id)} />) : <Empty label="Belum ada draft" />}
+        {drafts.length ? drafts.map((draft) => <ContentCard key={draft.id} item={draft} product={state.products.find((p) => p.id === draft.productId)} onApprove={() => onApprove(draft.id)} onPostNow={() => onPostNow(draft.id)} onReject={() => onReject(draft.id)} />) : <Empty label="Belum ada draft" />}
       </div>
     </>
   );
@@ -489,12 +506,12 @@ function Replies({ state, onApprove, onSkip }) {
   );
 }
 
-function Schedule({ state, onRun }) {
+function Schedule({ state, onRun, onPostNow }) {
   const scheduled = state.drafts.filter((item) => ["scheduled", "posted", "failed"].includes(item.status));
   return (
     <>
       <section className="panel"><div className="card-header"><div><h2>Schedule</h2><p className="muted">Approved post otomatis dijadwalkan dengan jeda minimal 3 jam.</p></div><button className="primary" onClick={onRun} type="button">Run scheduler</button></div></section>
-      <section className="panel" style={{ marginTop: 14 }}>{scheduled.length ? <SimpleTable rows={scheduled.map((item) => [item.status, item.caption.slice(0, 120), item.scheduledAt || "-", item.platformPostId || item.error || "-"])} /> : <Empty label="Belum ada schedule" />}</section>
+      <section className="panel" style={{ marginTop: 14 }}>{scheduled.length ? <ScheduleTable rows={scheduled} onPostNow={onPostNow} /> : <Empty label="Belum ada schedule" />}</section>
     </>
   );
 }
@@ -541,8 +558,8 @@ function Settings({ state, onSave }) {
   );
 }
 
-function ContentCard({ item, product, onApprove, onReject }) {
-  return <article className="card"><div className="card-header"><span className="badge">{item.status}</span><span className="muted">{product?.name || "Produk"}</span></div><p className="copy">{item.caption}</p><div className="actions"><button className="primary" onClick={onApprove} type="button">Approve</button><button className="danger" onClick={onReject} type="button">Reject</button></div></article>;
+function ContentCard({ item, product, onApprove, onPostNow, onReject }) {
+  return <article className="card"><div className="card-header"><span className="badge">{item.status}</span><span className="muted">{product?.name || "Produk"}</span></div><p className="copy">{item.caption}</p><div className="actions"><button className="primary" onClick={onPostNow} type="button">Post now</button><button className="secondary" onClick={onApprove} type="button">Approve</button><button className="danger" onClick={onReject} type="button">Reject</button></div></article>;
 }
 
 function OpportunityCard({ item, product, onReply, onReject }) {
@@ -564,6 +581,25 @@ function Logs({ logs }) {
 
 function SimpleTable({ rows }) {
   return <table className="table"><tbody>{rows.map((row, index) => <tr key={index}>{row.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}</tr>)}</tbody></table>;
+}
+
+function ScheduleTable({ rows, onPostNow }) {
+  return (
+    <table className="table">
+      <thead><tr><th>Status</th><th>Caption</th><th>Schedule</th><th>Result</th><th>Action</th></tr></thead>
+      <tbody>
+        {rows.map((item) => (
+          <tr key={item.id}>
+            <td><span className={`badge ${item.status === "posted" ? "ok" : item.status === "failed" ? "danger" : "warn"}`}>{item.status}</span></td>
+            <td>{item.caption.slice(0, 120)}</td>
+            <td>{item.scheduledAt || "-"}</td>
+            <td>{item.platformPostId || item.error || "-"}</td>
+            <td>{item.status !== "posted" ? <button className="secondary" onClick={() => onPostNow(item.id)} type="button">Post now</button> : "-"}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
 }
 
 function Empty({ label }) {
