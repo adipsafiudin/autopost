@@ -560,7 +560,8 @@ function Replies({ state, onManualReply, onFind, onQueue, onApprove, onReplyNow,
     <>
       <section className="panel">
         <h2>Reply yang bisa terkirim live</h2>
-        <p className="muted">Reply live membutuhkan `targetThreadId`. Opportunity mock hanya untuk latihan membuat draft, bukan untuk reply live.</p>
+        <p className="muted">Di mode live, sistem mencari post orang lain lewat Threads Keyword Search, membuat draft reply, lalu kamu klik Reply now.</p>
+        <p className="status-note">Setelah menambahkan permission `threads_keyword_search`, klik Connect Threads lagi agar token baru membawa izin search.</p>
       </section>
       <div className="grid two" style={{ marginTop: 14 }}>
         <section className="panel">
@@ -585,7 +586,7 @@ function Replies({ state, onManualReply, onFind, onQueue, onApprove, onReplyNow,
               <h2>Opportunity Draft</h2>
               <p className="muted">Gunakan untuk mencari ide percakapan. Live reply tetap butuh targetThreadId.</p>
             </div>
-            <button className="secondary" onClick={onFind} type="button">Find</button>
+            <button className="secondary" onClick={onFind} type="button">Cari post relevan</button>
           </div>
           {opportunities.length ? opportunities.slice(0, 3).map((item) => (
             <article className="mini-card" key={item.id}>

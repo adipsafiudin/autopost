@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { assertOk, buildMockOpportunities } from "@/lib/threads";
+import { assertOk, buildMockOpportunities, searchThreadsByProduct } from "@/lib/threads";
 
 export async function POST(request) {
   try {
@@ -11,6 +11,15 @@ export async function POST(request) {
         body: JSON.stringify(payload),
       }).then(assertOk);
       return NextResponse.json(response);
+    }
+
+    if (payload.settings?.threadsMode === "live") {
+      const products = payload.products || [];
+      const nested = await Promise.all(products.map((product) => searchThreadsByProduct(product)));
+      return NextResponse.json({
+        mode: "threads_keyword_search",
+        opportunities: nested.flat(),
+      });
     }
 
     return NextResponse.json({
