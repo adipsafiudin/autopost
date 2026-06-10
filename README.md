@@ -26,6 +26,8 @@ NEXT_PUBLIC_APP_URL=http://localhost:3000
 THREADS_CLIENT_ID=your_threads_app_id
 THREADS_CLIENT_SECRET=your_threads_app_secret
 THREADS_REDIRECT_URI=http://localhost:3000/auth/threads/callback
+GROQ_API_KEY=your_groq_api_key
+GROQ_MODEL=llama-3.3-70b-versatile
 THREADS_DISCOVERY_PROVIDER_URL=
 ```
 
@@ -51,7 +53,7 @@ https://domain-vercel-kamu.vercel.app/auth/threads/delete-data
 
 ## Fitur
 
-- Input manual link affiliate Shopee dan profil produk.
+- Input link produk/affiliate Shopee saja; profil produk dibuat otomatis oleh Groq AI.
 - Generate 5 draft konten per produk dengan disclosure affiliate.
 - Opportunity Finder via API route Next.js.
 - Reply approval queue dan scheduler.

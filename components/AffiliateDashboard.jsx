@@ -43,6 +43,7 @@ export default function AffiliateDashboard() {
     configured: false,
     threads: { connected: false },
   });
+  const [productImport, setProductImport] = useState({ status: "idle", message: "" });
 
   useEffect(() => {
     const saved = localStorage.getItem(STORE_KEY);
@@ -120,14 +121,33 @@ export default function AffiliateDashboard() {
     addLog("success", "Sample data dimuat");
   }
 
-  function addProduct(event) {
+  async function addProduct(event) {
     event.preventDefault();
     const data = Object.fromEntries(new FormData(event.currentTarget).entries());
-    update((draft) => {
-      draft.products.unshift({ id: makeId("product"), status: "active", createdAt: new Date().toISOString(), ...data });
-    });
-    event.currentTarget.reset();
-    addLog("success", `Produk ${data.name} disimpan`);
+    const url = data.affiliateUrl?.trim();
+    if (!url) return;
+    setProductImport({ status: "loading", message: "AI sedang membaca link dan membuat profil produk..." });
+    try {
+      const result = await apiJson("/api/products/enrich", {
+        method: "POST",
+        body: JSON.stringify({ url }),
+      });
+      update((draft) => {
+        draft.products.unshift({
+          id: makeId("product"),
+          status: "active",
+          affiliateUrl: url,
+          createdAt: new Date().toISOString(),
+          ...result.product,
+        });
+      });
+      event.currentTarget.reset();
+      setProductImport({ status: "success", message: `Produk "${result.product.name}" berhasil dibuat oleh AI.` });
+      addLog("success", `Produk ${result.product.name} disimpan dari link`);
+    } catch (error) {
+      setProductImport({ status: "error", message: error.message });
+      addLog("error", `Gagal membuat produk dari link: ${error.message}`);
+    }
   }
 
   function generateAllDrafts() {
@@ -445,7 +465,7 @@ export default function AffiliateDashboard() {
           <strong>Alur utama:</strong> input produk, cari konten relevan, generate konten, lalu pilih mau dijadikan post utama atau reply.
         </section>
         <FlowStatus state={state} backendStatus={backendStatus} onConnect={connectThreads} onRefresh={() => refreshBackendStatus()} setActiveView={setActiveView} />
-        {activeView === "products" && <Products state={state} onAdd={addProduct} onGenerate={generateProduct} onFind={(id) => findOpportunities(id)} onToggle={(id) => update((draft) => { const p = draft.products.find((item) => item.id === id); if (p) p.status = p.status === "active" ? "paused" : "active"; })} setActiveView={setActiveView} />}
+        {activeView === "products" && <Products state={state} importStatus={productImport} onAdd={addProduct} onGenerate={generateProduct} onFind={(id) => findOpportunities(id)} onToggle={(id) => update((draft) => { const p = draft.products.find((item) => item.id === id); if (p) p.status = p.status === "active" ? "paused" : "active"; })} setActiveView={setActiveView} />}
         {activeView === "search" && <SearchContent state={state} onFind={(productId) => findOpportunities(productId)} onFindAll={() => findOpportunities()} onQueue={createReply} onReject={(id) => update((draft) => { const item = draft.opportunities.find((entry) => entry.id === id); if (item) item.status = "rejected"; })} />}
         {activeView === "generate" && <GenerateContent state={state} onGenerate={generateAllDrafts} onQueue={createReply} onApprove={approveDraft} onPostNow={postNow} onReject={(id) => update((draft) => { const item = draft.drafts.find((entry) => entry.id === id); if (item) item.status = "rejected"; })} />}
         {activeView === "publish" && <PublishCenter state={state} onPostNow={postNow} onReplyNow={replyNow} onRun={runScheduler} onSkipReply={(id) => update((draft) => { const item = draft.replies.find((entry) => entry.id === id); if (item) item.status = "skipped"; })} />}
@@ -530,22 +550,24 @@ function FlowStatus({ state, backendStatus, onConnect, onRefresh, setActiveView 
   );
 }
 
-function Products({ state, onAdd, onGenerate, onFind, onToggle, setActiveView }) {
+function Products({ state, importStatus, onAdd, onGenerate, onFind, onToggle, setActiveView }) {
   return (
     <div className="grid two">
       <section className="panel">
-        <h2>Tambah Produk Affiliate</h2>
-        <p className="muted">Masukkan produk sekali. Keyword dipakai untuk mencari post orang lain yang cocok direply.</p>
+        <h2>Input Link Produk</h2>
+        <p className="muted">Tempel link produk atau link affiliate Shopee. AI Groq akan membuat nama, kategori, target pembeli, selling point, dan keyword otomatis.</p>
         <form className="form" onSubmit={onAdd}>
-          <label>Nama produk<input name="name" required placeholder="Contoh: Vacuum cleaner mini portable" /></label>
-          <label>Link affiliate Shopee<input name="affiliateUrl" required placeholder="https://shopee.co.id/..." /></label>
-          <label>Kategori<input name="category" placeholder="Rumah tangga, gadget, fashion" /></label>
-          <label>Harga/promo<input name="price" inputMode="numeric" placeholder="99000" /></label>
-          <label>Target pembeli<input name="audience" placeholder="anak kos, ibu rumah tangga, pekerja remote" /></label>
-          <label>Selling point<textarea name="sellingPoints" placeholder="hemat tempat, gampang dibersihkan, cocok untuk meja kerja" /></label>
-          <label>Keyword target<textarea name="keywords" placeholder="vacuum mini, debu keyboard, alat bersih meja" /></label>
-          <button className="primary" type="submit">Save product</button>
+          <label>Link produk / affiliate Shopee<input name="affiliateUrl" required placeholder="https://shopee.co.id/... atau https://s.shopee.co.id/..." /></label>
+          <button className="primary" disabled={importStatus.status === "loading"} type="submit">
+            {importStatus.status === "loading" ? "Membuat profil..." : "Buat produk dengan AI"}
+          </button>
         </form>
+        {importStatus.message ? (
+          <div className={`inline-status ${importStatus.status === "error" ? "error" : importStatus.status === "success" ? "success" : ""}`}>
+            <strong>{importStatus.status === "error" ? "Gagal" : importStatus.status === "success" ? "Berhasil" : "Memproses"}</strong>
+            <span>{importStatus.message}</span>
+          </div>
+        ) : null}
       </section>
       <section className="grid">
         {state.products.length ? state.products.map((product) => (
@@ -556,6 +578,9 @@ function Products({ state, onAdd, onGenerate, onFind, onToggle, setActiveView })
             </div>
             <p className="muted">{product.category || "Tanpa kategori"} - {money(product.price)}</p>
             <p>{productProfile(product).problem}</p>
+            <p className="muted">Target: {product.audience || "-"}</p>
+            <p className="muted">Keyword AI: {product.keywords || "-"}</p>
+            {product.confidence ? <span className={`badge ${product.confidence === "high" ? "ok" : "warn"}`}>AI confidence: {product.confidence}</span> : null}
             <div className="actions">
               <button className="secondary" onClick={() => onGenerate(product.id)} type="button">Generate content</button>
               <button className="ghost" onClick={() => onFind(product.id)} type="button">Cari target</button>
