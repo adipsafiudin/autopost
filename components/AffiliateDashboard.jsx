@@ -112,8 +112,8 @@ export default function AffiliateDashboard() {
       return;
     }
     const products = [
-      sampleProduct("Vacuum cleaner mini portable", "rumah tangga", "99000", "anak kos dan pekerja remote", "hemat tempat, cocok untuk debu meja, gampang dibawa", "vacuum mini, debu keyboard, alat bersih meja"),
-      sampleProduct("Lampu tidur sensor sentuh", "dekorasi kamar", "45000", "orang yang ingin kamar lebih nyaman", "cahaya lembut, hemat listrik, mudah dipindah", "lampu tidur, dekorasi kamar, lampu meja"),
+      sampleProduct("Vacuum cleaner mini portable", "rumah tangga", "99000", "anak kos dan pekerja remote", "Vacuum mini untuk membersihkan debu meja, keyboard, dan sudut kecil tanpa makan banyak tempat.", "hemat tempat, cocok untuk debu meja, gampang dibawa", "vacuum mini, debu keyboard, alat bersih meja"),
+      sampleProduct("Lampu tidur sensor sentuh", "dekorasi kamar", "45000", "orang yang ingin kamar lebih nyaman", "Lampu tidur dengan kontrol sentuh untuk menambah cahaya lembut di kamar tanpa ribet.", "cahaya lembut, hemat listrik, mudah dipindah", "lampu tidur, dekorasi kamar, lampu meja"),
     ];
     update((draft) => {
       draft.products = products;
@@ -633,6 +633,7 @@ function ProductCard({ product, isEditing, onEdit, onCancelEdit, onSave, onDelet
         </div>
       </div>
       <p className="muted">{product.category || "Tanpa kategori"} - {money(product.price)}</p>
+      <p className="copy">{product.description || "Belum ada deskripsi produk. Klik Edit untuk menambahkan deskripsi sebelum generate konten."}</p>
       <p>{productProfile(product).problem}</p>
       <p className="muted">Target: {product.audience || "-"}</p>
       <p className="muted">Selling point: {product.sellingPoints || "-"}</p>
@@ -655,6 +656,7 @@ function ProductEditCard({ product, onSave, onCancel }) {
     onSave({
       name: data.name?.trim() || "Produk Shopee",
       affiliateUrl: data.affiliateUrl?.trim() || product.affiliateUrl,
+      description: data.description?.trim() || "",
       category: data.category?.trim() || "produk",
       price: normalizePrice(data.price),
       audience: data.audience?.trim() || "pembeli Shopee",
@@ -677,6 +679,7 @@ function ProductEditCard({ product, onSave, onCancel }) {
         </div>
         <label>Nama produk<input name="name" required defaultValue={product.name || ""} /></label>
         <label>Link affiliate<input name="affiliateUrl" required defaultValue={product.affiliateUrl || ""} /></label>
+        <label>Deskripsi produk<textarea name="description" defaultValue={product.description || ""} placeholder="Jelaskan produk, manfaat, dan konteks pemakaian untuk konten affiliate." /></label>
         <div className="form-row">
           <label>Kategori<input name="category" defaultValue={product.category || ""} /></label>
           <label>Harga<input inputMode="numeric" name="price" defaultValue={product.price || ""} placeholder="99000" /></label>
@@ -1017,8 +1020,8 @@ function makeId(prefix) {
   return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
 
-function sampleProduct(name, category, price, audience, sellingPoints, keywords) {
-  return { id: makeId("product"), status: "active", name, affiliateUrl: `https://shopee.co.id/sample-${makeId("affiliate")}`, category, price, audience, sellingPoints, keywords, createdAt: new Date().toISOString() };
+function sampleProduct(name, category, price, audience, description, sellingPoints, keywords) {
+  return { id: makeId("product"), status: "active", name, affiliateUrl: `https://shopee.co.id/sample-${makeId("affiliate")}`, category, price, audience, description, sellingPoints, keywords, createdAt: new Date().toISOString() };
 }
 
 function splitList(value = "") {
@@ -1046,11 +1049,16 @@ function todayKey(date = new Date()) {
 function productProfile(product) {
   const points = splitList(product.sellingPoints);
   const keywords = splitList(product.keywords).concat(product.category || "").filter(Boolean);
+  const description = String(product.description || "").trim();
   return {
     problem: points[0] || `membantu kebutuhan ${product.category || "harian"}`,
     audience: product.audience || "pembeli Shopee",
+    description,
     keywords,
-    angles: [`Rekomendasi ${product.category || "produk"} dengan value jelas`],
+    angles: [
+      description ? summarizeSentence(description) : `Rekomendasi ${product.category || "produk"} dengan value jelas`,
+      points[1] || points[0] || `Cocok untuk ${product.audience || "kebutuhan harian"}`,
+    ],
   };
 }
 
@@ -1067,13 +1075,18 @@ function searchTermsForProduct(product) {
 function generateCaptions(product, settings) {
   const profile = productProfile(product);
   const price = product.price ? ` Harga sekitar ${money(product.price)}.` : "";
+  const description = profile.description || `${product.name} adalah rekomendasi ${product.category || "produk"} untuk ${profile.audience}.`;
   return [
-    `Kalau kamu sering bermasalah dengan ${profile.problem}, ${product.name} ini layak dicek.${price}\n\n${product.affiliateUrl}\n${settings.disclosure}`,
+    `${description}${price}\n\n${product.affiliateUrl}\n${settings.disclosure}`,
+    `Kalau kamu sering bermasalah dengan ${profile.problem}, ${product.name} ini layak dicek. ${profile.angles[0]}${price}\n\n${product.affiliateUrl}\n${settings.disclosure}`,
     `Rekomendasi ${product.category || "produk"} buat ${profile.audience}: ${product.name}. Point plusnya: ${splitList(product.sellingPoints).slice(0, 3).join(", ") || "praktis dan gampang dipakai"}.\n\n${product.affiliateUrl}\n${settings.disclosure}`,
     `Aku simpan ini buat yang lagi cari ${profile.keywords[0] || product.name}. ${product.name} bisa jadi opsi yang value-nya masuk akal.${price}\n\n${product.affiliateUrl}\n${settings.disclosure}`,
-    `Barang kecil yang efeknya kerasa: ${product.name}. Cocok untuk ${profile.audience}, apalagi kalau butuh ${profile.problem}.\n\n${product.affiliateUrl}\n${settings.disclosure}`,
     `${product.name} masuk wishlist rekomendasi hari ini. Angle terbaik: ${profile.angles[0]}.\n\nCek link: ${product.affiliateUrl}\n${settings.disclosure}`,
   ];
+}
+
+function summarizeSentence(value) {
+  return String(value || "").split(/[.!?]/).map((item) => item.trim()).filter(Boolean)[0] || "";
 }
 
 function scoreOpportunity(product, conversation, settings) {
