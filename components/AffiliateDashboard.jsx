@@ -5,12 +5,10 @@ import { useEffect, useMemo, useState } from "react";
 const STORE_KEY = "affiliateQueue.v2";
 
 const views = [
-  ["setup", "1. Setup"],
-  ["products", "2. Produk"],
-  ["posts", "3. Buat Post"],
-  ["publish", "4. Publish"],
-  ["replies", "5. Reply"],
-  ["monitoring", "6. Monitor"],
+  ["products", "1. Input Produk"],
+  ["search", "2. Cari Konten"],
+  ["generate", "3. Generate Konten"],
+  ["publish", "4. Post / Reply"],
   ["settings", "Settings"],
 ];
 
@@ -35,7 +33,7 @@ const initialState = {
 };
 
 export default function AffiliateDashboard() {
-  const [activeView, setActiveView] = useState("setup");
+  const [activeView, setActiveView] = useState("products");
   const [state, setState] = useState(initialState);
   const [ready, setReady] = useState(false);
   const [backendStatus, setBackendStatus] = useState({
@@ -387,10 +385,9 @@ export default function AffiliateDashboard() {
 
   const counts = useMemo(() => ({
     products: state.products.length,
-    posts: state.drafts.filter((item) => item.status === "draft").length,
-    opportunities: state.opportunities.filter((item) => item.status === "queued").length,
-    replies: state.replies.filter((item) => item.status === "draft").length,
-    publish: state.drafts.filter((item) => item.status === "scheduled").length,
+    search: state.opportunities.filter((item) => item.status === "queued").length,
+    generate: state.drafts.filter((item) => item.status === "draft").length + state.replies.filter((item) => item.status === "draft").length,
+    publish: state.drafts.filter((item) => ["draft", "scheduled", "failed"].includes(item.status)).length + state.replies.filter((item) => ["draft", "approved", "failed"].includes(item.status)).length,
   }), [state]);
 
   return (
@@ -416,19 +413,18 @@ export default function AffiliateDashboard() {
             <h1>{views.find(([id]) => id === activeView)?.[1]}</h1>
           </div>
           <div className="top-actions">
+            <span className={`badge ${backendStatus.threads?.connected ? "ok" : "warn"}`}>{backendStatus.threads?.connected ? "Threads connected" : "Connect Threads dulu"}</span>
             <button className="ghost" onClick={seedData} type="button">Load sample</button>
-            <button className="primary" onClick={runScheduler} type="button">Run scheduler</button>
           </div>
         </header>
         <section className="notice">
-          <strong>Safety mode aktif.</strong> Post harus di-approve. Reply terjadwal hanya berjalan setelah approve dan membutuhkan target thread ID.
+          <strong>Alur utama:</strong> input produk, cari konten relevan, generate konten, lalu pilih mau dijadikan post utama atau reply.
         </section>
-        {activeView === "setup" && <Dashboard state={state} backendStatus={backendStatus} onGenerate={generateAllDrafts} onFind={() => findOpportunities()} onReply={runReplyScheduler} onConnect={connectThreads} onRefresh={() => refreshBackendStatus()} setActiveView={setActiveView} />}
-        {activeView === "products" && <Products state={state} onAdd={addProduct} onGenerate={generateProduct} onFind={findOpportunities} onToggle={(id) => update((draft) => { const p = draft.products.find((item) => item.id === id); if (p) p.status = p.status === "active" ? "paused" : "active"; })} />}
-        {activeView === "posts" && <Drafts state={state} onGenerate={generateAllDrafts} onApprove={approveDraft} onPostNow={postNow} onReject={(id) => update((draft) => { const item = draft.drafts.find((entry) => entry.id === id); if (item) item.status = "rejected"; })} />}
-        {activeView === "publish" && <Schedule state={state} onRun={runScheduler} onPostNow={postNow} />}
-        {activeView === "replies" && <Replies state={state} onManualReply={addManualReply} onFind={() => findOpportunities()} onQueue={createReply} onApprove={approveReply} onReplyNow={replyNow} onSkip={(id) => update((draft) => { const item = draft.replies.find((entry) => entry.id === id); if (item) item.status = "skipped"; })} />}
-        {activeView === "monitoring" && <Monitoring state={state} />}
+        <FlowStatus state={state} backendStatus={backendStatus} onConnect={connectThreads} onRefresh={() => refreshBackendStatus()} setActiveView={setActiveView} />
+        {activeView === "products" && <Products state={state} onAdd={addProduct} onGenerate={generateProduct} onFind={findOpportunities} onToggle={(id) => update((draft) => { const p = draft.products.find((item) => item.id === id); if (p) p.status = p.status === "active" ? "paused" : "active"; })} setActiveView={setActiveView} />}
+        {activeView === "search" && <SearchContent state={state} onFind={() => findOpportunities()} onQueue={createReply} onReject={(id) => update((draft) => { const item = draft.opportunities.find((entry) => entry.id === id); if (item) item.status = "rejected"; })} />}
+        {activeView === "generate" && <GenerateContent state={state} onGenerate={generateAllDrafts} onQueue={createReply} onApprove={approveDraft} onPostNow={postNow} onReject={(id) => update((draft) => { const item = draft.drafts.find((entry) => entry.id === id); if (item) item.status = "rejected"; })} />}
+        {activeView === "publish" && <PublishCenter state={state} onPostNow={postNow} onReplyNow={replyNow} onRun={runScheduler} onSkipReply={(id) => update((draft) => { const item = draft.replies.find((entry) => entry.id === id); if (item) item.status = "skipped"; })} />}
         {activeView === "settings" && <Settings state={state} onSave={(settings) => update((draft) => { draft.settings = settings; })} />}
       </main>
     </>
@@ -491,11 +487,31 @@ function Dashboard({ state, backendStatus, onGenerate, onFind, onReply, onConnec
   );
 }
 
-function Products({ state, onAdd, onGenerate, onFind, onToggle }) {
+function FlowStatus({ state, backendStatus, onConnect, onRefresh, setActiveView }) {
+  return (
+    <section className="panel flow-panel">
+      <div className="flow-steps">
+        <button className="step-card" onClick={() => setActiveView("products")} type="button"><strong>1</strong><span>Input produk</span><small>{state.products.length} produk</small></button>
+        <button className="step-card" onClick={() => setActiveView("search")} type="button"><strong>2</strong><span>Cari konten</span><small>{state.opportunities.filter((item) => item.status === "queued").length} target</small></button>
+        <button className="step-card" onClick={() => setActiveView("generate")} type="button"><strong>3</strong><span>Generate konten</span><small>{state.drafts.filter((item) => item.status === "draft").length} post, {state.replies.filter((item) => item.status === "draft").length} reply</small></button>
+        <button className="step-card" onClick={() => setActiveView("publish")} type="button"><strong>4</strong><span>Post / Reply</span><small>{state.drafts.filter((item) => item.status === "posted").length} posted</small></button>
+      </div>
+      <div className="setup-strip">
+        <span className={`badge ${state.settings.threadsMode === "live" ? "ok" : "warn"}`}>mode: {state.settings.threadsMode}</span>
+        <span className={`badge ${backendStatus.threads?.connected ? "ok" : "warn"}`}>{backendStatus.threads?.connected ? "connected" : "not connected"}</span>
+        <button className="secondary" onClick={onConnect} type="button">Connect Threads</button>
+        <button className="ghost" onClick={onRefresh} type="button">Refresh</button>
+      </div>
+    </section>
+  );
+}
+
+function Products({ state, onAdd, onGenerate, onFind, onToggle, setActiveView }) {
   return (
     <div className="grid two">
       <section className="panel">
         <h2>Tambah Produk Affiliate</h2>
+        <p className="muted">Masukkan produk sekali. Keyword dipakai untuk mencari post orang lain yang cocok direply.</p>
         <form className="form" onSubmit={onAdd}>
           <label>Nama produk<input name="name" required placeholder="Contoh: Vacuum cleaner mini portable" /></label>
           <label>Link affiliate Shopee<input name="affiliateUrl" required placeholder="https://shopee.co.id/..." /></label>
@@ -518,12 +534,117 @@ function Products({ state, onAdd, onGenerate, onFind, onToggle }) {
             <p>{productProfile(product).problem}</p>
             <div className="actions">
               <button className="secondary" onClick={() => onGenerate(product.id)} type="button">Generate content</button>
-              <button className="ghost" onClick={() => onFind(product.id)} type="button">Find opportunity</button>
+              <button className="ghost" onClick={() => onFind(product.id)} type="button">Cari target</button>
+              <button className="primary" onClick={() => setActiveView("search")} type="button">Lanjut</button>
             </div>
           </article>
         )) : <Empty label="Belum ada produk" />}
       </section>
     </div>
+  );
+}
+
+function SearchContent({ state, onFind, onQueue, onReject }) {
+  const opportunities = state.opportunities.filter((item) => item.status === "queued");
+  return (
+    <>
+      <section className="panel">
+        <div className="card-header">
+          <div>
+            <h2>Cari post orang lain yang relevan</h2>
+            <p className="muted">Sistem memakai keyword produk. Di mode live, ini mencoba Threads Keyword Search; di mode mock, hanya contoh target.</p>
+          </div>
+          <button className="primary" onClick={onFind} type="button">Cari konten relevan</button>
+        </div>
+      </section>
+      <div className="grid two" style={{ marginTop: 14 }}>
+        {opportunities.length ? opportunities.map((item) => <OpportunityCard key={item.id} item={item} product={state.products.find((p) => p.id === item.productId)} onReply={() => onQueue(item.id)} onReject={() => onReject(item.id)} />) : <Empty label="Belum ada target reply" />}
+      </div>
+    </>
+  );
+}
+
+function GenerateContent({ state, onGenerate, onQueue, onApprove, onPostNow, onReject }) {
+  const drafts = state.drafts.filter((item) => item.status === "draft");
+  const opportunities = state.opportunities.filter((item) => item.status === "queued");
+  const replies = state.replies.filter((item) => item.status === "draft");
+  return (
+    <>
+      <section className="panel">
+        <div className="card-header">
+          <div>
+            <h2>Generate konten untuk post atau reply</h2>
+            <p className="muted">Generate post utama dari produk, atau generate reply dari target yang ditemukan.</p>
+          </div>
+          <button className="primary" onClick={onGenerate} type="button">Generate post utama</button>
+        </div>
+      </section>
+      <div className="grid two" style={{ marginTop: 14 }}>
+        <section className="panel">
+          <h2>Target untuk dijadikan reply</h2>
+          {opportunities.length ? opportunities.slice(0, 6).map((item) => (
+            <article className="mini-card" key={item.id}>
+              <strong>{item.author}</strong>
+              <p>{item.text}</p>
+              <span className="muted">Produk: {state.products.find((p) => p.id === item.productId)?.name || "-"}</span>
+              <button className="secondary" onClick={() => onQueue(item.id)} type="button">Generate reply</button>
+            </article>
+          )) : <Empty label="Belum ada target" />}
+        </section>
+        <section className="panel">
+          <h2>Reply draft</h2>
+          {replies.length ? replies.map((reply) => (
+            <article className="mini-card" key={reply.id}>
+              <strong>{reply.targetAuthor}</strong>
+              <p className="copy">{reply.body}</p>
+              <span className="muted">Thread ID: {reply.targetThreadId || "belum tersedia"}</span>
+            </article>
+          )) : <Empty label="Belum ada reply draft" />}
+        </section>
+      </div>
+      <div className="grid three" style={{ marginTop: 14 }}>
+        {drafts.length ? drafts.map((draft) => <ContentCard key={draft.id} item={draft} product={state.products.find((p) => p.id === draft.productId)} onApprove={() => onApprove(draft.id)} onPostNow={() => onPostNow(draft.id)} onReject={() => onReject(draft.id)} />) : <Empty label="Belum ada post draft" />}
+      </div>
+    </>
+  );
+}
+
+function PublishCenter({ state, onPostNow, onReplyNow, onRun, onSkipReply }) {
+  const posts = state.drafts.filter((item) => ["draft", "scheduled", "failed", "posted"].includes(item.status));
+  const replies = state.replies.filter((item) => ["draft", "approved", "failed", "posted"].includes(item.status));
+  return (
+    <>
+      <section className="panel">
+        <div className="card-header">
+          <div>
+            <h2>Pilih output konten</h2>
+            <p className="muted">Konten bisa dikirim sebagai post utama atau sebagai reply ke target yang ditemukan.</p>
+          </div>
+          <button className="secondary" onClick={onRun} type="button">Run scheduled</button>
+        </div>
+      </section>
+      <div className="grid two" style={{ marginTop: 14 }}>
+        <section className="panel">
+          <h2>Post di halaman utama</h2>
+          {posts.length ? <ScheduleTable rows={posts} onPostNow={onPostNow} /> : <Empty label="Belum ada post draft" />}
+        </section>
+        <section className="panel">
+          <h2>Reply ke post orang lain</h2>
+          {replies.length ? replies.map((reply) => (
+            <article className="card" key={reply.id}>
+              <div className="card-header"><span className={`badge ${reply.status === "posted" ? "ok" : reply.status === "failed" ? "danger" : ""}`}>{reply.status}</span><span className="muted">{reply.targetAuthor}</span></div>
+              <p className="muted">Thread ID: {reply.targetThreadId || "belum tersedia"}</p>
+              <p className="copy">{reply.body}</p>
+              {reply.error ? <p className="muted">{reply.error}</p> : null}
+              <div className="actions">
+                {reply.status !== "posted" ? <button className="primary" onClick={() => onReplyNow(reply.id)} type="button">Reply now</button> : null}
+                <button className="danger" onClick={() => onSkipReply(reply.id)} type="button">Skip</button>
+              </div>
+            </article>
+          )) : <Empty label="Belum ada reply draft" />}
+        </section>
+      </div>
+    </>
   );
 }
 

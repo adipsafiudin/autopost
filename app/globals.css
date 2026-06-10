@@ -236,9 +236,13 @@ nav {
   margin-bottom: 14px;
 }
 
+.flow-panel {
+  margin-bottom: 18px;
+}
+
 .flow-steps {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .step-card {
@@ -285,6 +289,16 @@ nav {
 
 .mini-card p {
   margin: 0;
+}
+
+.setup-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
 }
 
 .card h3,
